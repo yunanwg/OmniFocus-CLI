@@ -69,7 +69,7 @@ from typing import Any, cast
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, ToolAnnotations
 
 from omnifocus.api_common import (
     folder_summary,
@@ -140,383 +140,451 @@ def _service() -> StoreBackedApiService:
 # ---------------------------------------------------------------------------
 
 
+_READ_ONLY_TOOLS = frozenset(
+    {
+        "list_tasks",
+        "search_tasks",
+        "get_task",
+        "get_project",
+        "list_projects",
+        "list_projects_for_review",
+        "list_folders",
+        "get_folder",
+        "get_folder_tree",
+        "list_tags",
+        "get_tag",
+        "sync_now",
+    }
+)
+# Writes that remove/complete data; everything else not read-only is a
+# non-destructive add/update.
+_DESTRUCTIVE_TOOLS = frozenset({"complete_task", "complete_project", "drop_folder", "drop_tag"})
+
+
+def _annotate(tools: list[Tool]) -> list[Tool]:
+    """Attach read-only / destructive behaviour hints to each tool.
+
+    This is the only tool grouping the MCP spec lets a server express (there is
+    no category/group field): clients such as claude.ai/Notion split tools into
+    read-only vs write/destructive from these hints. It also mirrors the
+    harness-layer write policy — reads and writes become distinct surfaces.
+    """
+    annotated: list[Tool] = []
+    for tool in tools:
+        if tool.name in _READ_ONLY_TOOLS:
+            hints = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+        else:
+            hints = ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=tool.name in _DESTRUCTIVE_TOOLS,
+                openWorldHint=False,
+            )
+        annotated.append(tool.model_copy(update={"annotations": hints}))
+    return annotated
+
+
 @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Return the list of all MCP tools provided by this server."""
-    return [
-        Tool(
-            name="list_tasks",
-            description=(
-                "List OmniFocus tasks. By default returns active (incomplete) tasks. "
-                "Use status=completed with completed_on/completed_since to see finished "
-                "work (e.g. what was completed today). Optionally filter by inbox, today "
-                "(due today or overdue), flagged, due date, project name, tag, or folder."
+    return _annotate(
+        [
+            Tool(
+                name="list_tasks",
+                description=(
+                    "List OmniFocus tasks. By default returns active (incomplete) tasks. "
+                    "Use status=completed with completed_on/completed_since to see finished "
+                    "work (e.g. what was completed today). Optionally filter by inbox, today "
+                    "(due today or overdue), flagged, due date, project name, tag, or folder."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "completed", "dropped", "all"],
+                            "description": "Base set: active (default), completed, dropped, or all",
+                        },
+                        "completed_on": {
+                            "type": "string",
+                            "description": (
+                                "Only tasks completed on this local date (ISO YYYY-MM-DD or "
+                                "today/yesterday). Implies status=completed."
+                            ),
+                        },
+                        "completed_since": {
+                            "type": "string",
+                            "description": (
+                                "Only tasks completed on or after this local date (ISO or "
+                                "today/yesterday). Implies status=completed."
+                            ),
+                        },
+                        "inbox": {"type": "boolean", "description": "Inbox tasks only"},
+                        "today": {"type": "boolean", "description": "Due today or overdue"},
+                        "flagged": {"type": "boolean", "description": "Flagged tasks only"},
+                        "due": {"type": "boolean", "description": "Tasks with any due date"},
+                        "project": {"type": "string", "description": "Project name substring"},
+                        "tag": {"type": "string", "description": "Tag name substring"},
+                        "tag_id": {"type": "string", "description": "Exact tag ID"},
+                        "folder": {
+                            "type": "string",
+                            "description": "Folder name substring (includes nested subfolders)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max tasks to return (default 50)",
+                        },
+                    },
+                },
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["active", "completed", "dropped", "all"],
-                        "description": "Base set: active (default), completed, dropped, or all",
+            Tool(
+                name="search_tasks",
+                description="Fuzzy search tasks by name or ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer", "description": "Max results (default 10)"},
                     },
-                    "completed_on": {
-                        "type": "string",
-                        "description": (
-                            "Only tasks completed on this local date (ISO YYYY-MM-DD or "
-                            "today/yesterday). Implies status=completed."
-                        ),
-                    },
-                    "completed_since": {
-                        "type": "string",
-                        "description": (
-                            "Only tasks completed on or after this local date (ISO or "
-                            "today/yesterday). Implies status=completed."
-                        ),
-                    },
-                    "inbox": {"type": "boolean", "description": "Inbox tasks only"},
-                    "today": {"type": "boolean", "description": "Due today or overdue"},
-                    "flagged": {"type": "boolean", "description": "Flagged tasks only"},
-                    "due": {"type": "boolean", "description": "Tasks with any due date"},
-                    "project": {"type": "string", "description": "Project name substring"},
-                    "tag": {"type": "string", "description": "Tag name substring"},
-                    "tag_id": {"type": "string", "description": "Exact tag ID"},
-                    "folder": {
-                        "type": "string",
-                        "description": "Folder name substring (includes nested subfolders)",
-                    },
-                    "limit": {"type": "integer", "description": "Max tasks to return (default 50)"},
+                    "required": ["query"],
                 },
-            },
-        ),
-        Tool(
-            name="search_tasks",
-            description="Fuzzy search tasks by name or ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results (default 10)"},
+            ),
+            Tool(
+                name="get_task",
+                description="Get a single task by its OmniFocus ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID"},
+                    },
+                    "required": ["task_id"],
                 },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="get_task",
-            description="Get a single task by its OmniFocus ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
+            ),
+            Tool(
+                name="add_task",
+                description="Create a new OmniFocus task.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Task name"},
+                        "project": {"type": "string", "description": "Project name (substring)"},
+                        "due": {
+                            "type": "string",
+                            "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
+                        },
+                        "flagged": {"type": "boolean"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["name"],
                 },
-                "required": ["task_id"],
-            },
-        ),
-        Tool(
-            name="add_task",
-            description="Create a new OmniFocus task.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Task name"},
-                    "project": {"type": "string", "description": "Project name (substring)"},
-                    "due": {
-                        "type": "string",
-                        "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
+            ),
+            Tool(
+                name="complete_task",
+                description="Mark a task as completed by ID or fuzzy name.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Task ID or name fragment"},
                     },
-                    "flagged": {"type": "boolean"},
-                    "note": {"type": "string"},
+                    "required": ["query"],
                 },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="complete_task",
-            description="Mark a task as completed by ID or fuzzy name.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Task ID or name fragment"},
+            ),
+            Tool(
+                name="update_task",
+                description="Update a task's fields or mark it dropped.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "project_id": {
+                            "type": "string",
+                            "description": "Move task into this project",
+                        },
+                        "clear_project": {
+                            "type": "boolean",
+                            "description": "Remove project assignment and move task to inbox",
+                        },
+                        "inbox": {
+                            "type": "boolean",
+                            "description": "When true, move task to inbox",
+                        },
+                        "due": {
+                            "type": "string",
+                            "description": "ISO 8601 datetime or empty to clear",
+                        },
+                        "defer": {
+                            "type": "string",
+                            "description": "ISO 8601 datetime or empty to clear",
+                        },
+                        "flagged": {"type": "boolean"},
+                        "note": {"type": "string"},
+                        "estimate": {
+                            "type": ["integer", "string"],
+                            "description": "Estimated minutes or empty to clear",
+                        },
+                        "tag_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Replace tag IDs on the task",
+                        },
+                        "clear_tags": {"type": "boolean"},
+                        "dropped": {"type": "boolean"},
+                    },
+                    "required": ["task_id"],
                 },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="update_task",
-            description="Update a task's fields or mark it dropped.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "project_id": {"type": "string", "description": "Move task into this project"},
-                    "clear_project": {
-                        "type": "boolean",
-                        "description": "Remove project assignment and move task to inbox",
+            ),
+            Tool(
+                name="get_project",
+                description="Get a single project by its OmniFocus ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project ID"},
                     },
-                    "inbox": {
-                        "type": "boolean",
-                        "description": "When true, move task to inbox",
-                    },
-                    "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
-                    "defer": {
-                        "type": "string",
-                        "description": "ISO 8601 datetime or empty to clear",
-                    },
-                    "flagged": {"type": "boolean"},
-                    "note": {"type": "string"},
-                    "estimate": {
-                        "type": ["integer", "string"],
-                        "description": "Estimated minutes or empty to clear",
-                    },
-                    "tag_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Replace tag IDs on the task",
-                    },
-                    "clear_tags": {"type": "boolean"},
-                    "dropped": {"type": "boolean"},
+                    "required": ["project_id"],
                 },
-                "required": ["task_id"],
-            },
-        ),
-        Tool(
-            name="get_project",
-            description="Get a single project by its OmniFocus ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                },
-                "required": ["project_id"],
-            },
-        ),
-        Tool(
-            name="add_project",
-            description="Create a new OmniFocus project.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "folder": {"type": "string", "description": "Folder name substring"},
-                    "due": {"type": "string", "description": "Due date ISO 8601 or natural"},
-                    "defer": {"type": "string", "description": "Defer date ISO 8601 or natural"},
-                    "flagged": {"type": "boolean"},
-                    "note": {"type": "string"},
-                    "status": {"type": "string", "enum": ["active", "inactive"]},
-                },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="update_project",
-            description="Update a project's fields, status, or folder assignment.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "folder_id": {"type": "string", "description": "Move project into this folder"},
-                    "clear_folder": {
-                        "type": "boolean",
-                        "description": "Remove folder assignment from the project",
+            ),
+            Tool(
+                name="add_project",
+                description="Create a new OmniFocus project.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "folder": {"type": "string", "description": "Folder name substring"},
+                        "due": {"type": "string", "description": "Due date ISO 8601 or natural"},
+                        "defer": {
+                            "type": "string",
+                            "description": "Defer date ISO 8601 or natural",
+                        },
+                        "flagged": {"type": "boolean"},
+                        "note": {"type": "string"},
+                        "status": {"type": "string", "enum": ["active", "inactive"]},
                     },
-                    "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
-                    "defer": {
-                        "type": "string",
-                        "description": "ISO 8601 datetime or empty to clear",
-                    },
-                    "flagged": {"type": "boolean"},
-                    "note": {"type": "string"},
-                    "status": {"type": "string", "enum": ["active", "inactive", "done", "dropped"]},
-                    "tag_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Replace tag IDs on the project",
-                    },
-                    "clear_tags": {"type": "boolean"},
+                    "required": ["name"],
                 },
-                "required": ["project_id"],
-            },
-        ),
-        Tool(
-            name="complete_project",
-            description="Mark a project as completed by ID or fuzzy name.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Project ID or name fragment"},
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="list_projects",
-            description="List OmniFocus projects.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["active", "all", "inactive", "done", "dropped"],
-                        "description": "Filter by status (default: active)",
+            ),
+            Tool(
+                name="update_project",
+                description="Update a project's fields, status, or folder assignment.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "folder_id": {
+                            "type": "string",
+                            "description": "Move project into this folder",
+                        },
+                        "clear_folder": {
+                            "type": "boolean",
+                            "description": "Remove folder assignment from the project",
+                        },
+                        "due": {
+                            "type": "string",
+                            "description": "ISO 8601 datetime or empty to clear",
+                        },
+                        "defer": {
+                            "type": "string",
+                            "description": "ISO 8601 datetime or empty to clear",
+                        },
+                        "flagged": {"type": "boolean"},
+                        "note": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "inactive", "done", "dropped"],
+                        },
+                        "tag_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Replace tag IDs on the project",
+                        },
+                        "clear_tags": {"type": "boolean"},
                     },
-                    "tag": {"type": "string", "description": "Tag name substring"},
-                    "tag_id": {"type": "string", "description": "Exact tag ID"},
+                    "required": ["project_id"],
                 },
-            },
-        ),
-        Tool(
-            name="list_projects_for_review",
-            description="List active and inactive projects that are due for review.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "due_only": {
-                        "type": "boolean",
-                        "description": "When false, include non-due projects as well",
+            ),
+            Tool(
+                name="complete_project",
+                description="Mark a project as completed by ID or fuzzy name.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Project ID or name fragment"},
                     },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max projects to return (default 50)",
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="list_projects",
+                description="List OmniFocus projects.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "all", "inactive", "done", "dropped"],
+                            "description": "Filter by status (default: active)",
+                        },
+                        "tag": {"type": "string", "description": "Tag name substring"},
+                        "tag_id": {"type": "string", "description": "Exact tag ID"},
                     },
                 },
-            },
-        ),
-        Tool(
-            name="mark_project_reviewed",
-            description="Stamp a project as reviewed and recalculate next review when possible.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                    "reviewed_at": {
-                        "type": "string",
-                        "description": "Optional ISO 8601 timestamp; defaults to now in UTC",
+            ),
+            Tool(
+                name="list_projects_for_review",
+                description="List active and inactive projects that are due for review.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "due_only": {
+                            "type": "boolean",
+                            "description": "When false, include non-due projects as well",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max projects to return (default 50)",
+                        },
                     },
                 },
-                "required": ["project_id"],
-            },
-        ),
-        Tool(
-            name="list_folders",
-            description="List all OmniFocus folders.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="get_folder",
-            description="Get a single folder by its OmniFocus ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {"folder_id": {"type": "string", "description": "Folder ID"}},
-                "required": ["folder_id"],
-            },
-        ),
-        Tool(
-            name="get_folder_tree",
-            description="Return the nested folder hierarchy with direct child projects.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="add_folder",
-            description="Create a new OmniFocus folder.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "parent_folder_id": {"type": "string"},
+            ),
+            Tool(
+                name="mark_project_reviewed",
+                description=(
+                    "Stamp a project as reviewed and recalculate next review when possible."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project ID"},
+                        "reviewed_at": {
+                            "type": "string",
+                            "description": "Optional ISO 8601 timestamp; defaults to now in UTC",
+                        },
+                    },
+                    "required": ["project_id"],
                 },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="update_folder",
-            description="Rename or move a folder under another folder.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "folder_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "parent_folder_id": {"type": "string"},
-                    "clear_parent": {"type": "boolean"},
+            ),
+            Tool(
+                name="list_folders",
+                description="List all OmniFocus folders.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="get_folder",
+                description="Get a single folder by its OmniFocus ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"folder_id": {"type": "string", "description": "Folder ID"}},
+                    "required": ["folder_id"],
                 },
-                "required": ["folder_id"],
-            },
-        ),
-        Tool(
-            name="drop_folder",
-            description="Drop a folder by ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {"folder_id": {"type": "string"}},
-                "required": ["folder_id"],
-            },
-        ),
-        Tool(
-            name="list_tags",
-            description="List OmniFocus tags/contexts.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "all": {
-                        "type": "boolean",
-                        "description": "Include dropped/hidden tags",
-                    }
+            ),
+            Tool(
+                name="get_folder_tree",
+                description="Return the nested folder hierarchy with direct child projects.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="add_folder",
+                description="Create a new OmniFocus folder.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "parent_folder_id": {"type": "string"},
+                    },
+                    "required": ["name"],
                 },
-            },
-        ),
-        Tool(
-            name="get_tag",
-            description="Get a single tag by its OmniFocus ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {"tag_id": {"type": "string", "description": "Tag ID"}},
-                "required": ["tag_id"],
-            },
-        ),
-        Tool(
-            name="add_tag",
-            description="Create a new OmniFocus tag.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "parent_tag_id": {"type": "string"},
-                    "note": {"type": "string"},
+            ),
+            Tool(
+                name="update_folder",
+                description="Rename or move a folder under another folder.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "parent_folder_id": {"type": "string"},
+                        "clear_parent": {"type": "boolean"},
+                    },
+                    "required": ["folder_id"],
                 },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="update_tag",
-            description="Rename or move a tag under another tag.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "tag_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "parent_tag_id": {"type": "string"},
-                    "clear_parent": {"type": "boolean"},
-                    "note": {"type": "string"},
+            ),
+            Tool(
+                name="drop_folder",
+                description="Drop a folder by ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"folder_id": {"type": "string"}},
+                    "required": ["folder_id"],
                 },
-                "required": ["tag_id"],
-            },
-        ),
-        Tool(
-            name="drop_tag",
-            description="Drop a tag by ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {"tag_id": {"type": "string"}},
-                "required": ["tag_id"],
-            },
-        ),
-        Tool(
-            name="sync_now",
-            description="Trigger a full sync from the WebDAV server.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-    ]
+            ),
+            Tool(
+                name="list_tags",
+                description="List OmniFocus tags/contexts.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "all": {
+                            "type": "boolean",
+                            "description": "Include dropped/hidden tags",
+                        }
+                    },
+                },
+            ),
+            Tool(
+                name="get_tag",
+                description="Get a single tag by its OmniFocus ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"tag_id": {"type": "string", "description": "Tag ID"}},
+                    "required": ["tag_id"],
+                },
+            ),
+            Tool(
+                name="add_tag",
+                description="Create a new OmniFocus tag.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "parent_tag_id": {"type": "string"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="update_tag",
+                description="Rename or move a tag under another tag.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "tag_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "parent_tag_id": {"type": "string"},
+                        "clear_parent": {"type": "boolean"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["tag_id"],
+                },
+            ),
+            Tool(
+                name="drop_tag",
+                description="Drop a tag by ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"tag_id": {"type": "string"}},
+                    "required": ["tag_id"],
+                },
+            ),
+            Tool(
+                name="sync_now",
+                description="Trigger a full sync from the WebDAV server.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

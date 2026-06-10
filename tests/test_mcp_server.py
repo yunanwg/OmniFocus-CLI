@@ -1695,3 +1695,26 @@ class TestTaskSummary:
         model = _make_model()
         summary = _task_summary(model.tasks["t1"], model)
         assert summary["due"] is not None
+
+
+class TestToolAnnotations:
+    @pytest.mark.asyncio
+    async def test_read_tools_marked_read_only(self) -> None:
+        tools = {tool.name: tool for tool in await list_tools()}
+        for name in ("list_tasks", "search_tasks", "get_task", "list_projects", "sync_now"):
+            assert tools[name].annotations is not None
+            assert tools[name].annotations.readOnlyHint is True
+
+    @pytest.mark.asyncio
+    async def test_non_destructive_writes(self) -> None:
+        tools = {tool.name: tool for tool in await list_tools()}
+        for name in ("add_task", "update_task", "mark_project_reviewed"):
+            assert tools[name].annotations.readOnlyHint is False
+            assert tools[name].annotations.destructiveHint is False
+
+    @pytest.mark.asyncio
+    async def test_destructive_writes_flagged(self) -> None:
+        tools = {tool.name: tool for tool in await list_tools()}
+        for name in ("complete_task", "complete_project", "drop_folder", "drop_tag"):
+            assert tools[name].annotations.readOnlyHint is False
+            assert tools[name].annotations.destructiveHint is True
