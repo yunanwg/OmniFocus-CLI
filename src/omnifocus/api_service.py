@@ -26,6 +26,7 @@ from omnifocus.api_common import (
 )
 from omnifocus.dateparse import parse_due
 from omnifocus.errors import OFHTTPError
+from omnifocus.filters import VALID_TASK_STATUS, filter_tasks
 from omnifocus.formatting import build_folder_tree_data
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
@@ -68,35 +69,42 @@ class StoreBackedApiService:
         project: str | None = None,
         tag: str | None = None,
         tag_id: str | None = None,
+        status: str = "active",
+        completed_on: str | None = None,
+        completed_since: str | None = None,
+        folder: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """List tasks using the shared filter model for MCP and HTTP.
 
         Filtering semantics intentionally match the user-facing surfaces: all supplied filters are
-        applied with AND logic, `project` and `tag` use substring matching, and `tag_id` uses an
-        exact stable identifier.
+        applied with AND logic; `project`, `tag` and `folder` use substring matching, and `tag_id`
+        uses an exact stable identifier. `status` selects the base set
+        (active/completed/dropped/all); `completed_on` / `completed_since` accept an ISO date or
+        `today`/`yesterday` and report on finished work (they imply `status=completed`).
         """
+        if status not in VALID_TASK_STATUS:
+            raise OFHTTPError("Invalid status filter", status_code=422, code="validation_error")
         model = await self._load_model(False)
-        tasks = model.active_tasks
-        if inbox:
-            tasks = [task for task in tasks if task.inbox]
-        if today:
-            now_date = datetime.today().date()
-            tasks = [task for task in tasks if task.due is not None and task.due.date() <= now_date]
-        if flagged:
-            tasks = [task for task in tasks if task.flagged]
-        if due:
-            tasks = [task for task in tasks if task.due is not None]
-        if project:
-            needle = project.lower()
-            matching = {pid for pid, item in model.projects.items() if needle in item.name.lower()}
-            tasks = [task for task in tasks if task.project_id in matching]
         if tag_id:
             self._require_tag(model, tag_id)
-            tasks = [task for task in tasks if tag_id in task.tag_ids]
-        if tag:
-            matches = matching_tag_ids(model, tag)
-            tasks = [task for task in tasks if matches.intersection(task.tag_ids)]
+        try:
+            tasks = filter_tasks(
+                model,
+                status=status,
+                inbox=inbox,
+                today=today,
+                flagged=flagged,
+                due=due,
+                project=project,
+                tag=tag,
+                tag_id=tag_id,
+                folder=folder,
+                completed_on=completed_on,
+                completed_since=completed_since,
+            )
+        except ValueError as exc:
+            raise OFHTTPError(str(exc), status_code=422, code="validation_error") from exc
         return [task_summary(task, model) for task in tasks[:limit]]
 
     async def search_tasks(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:

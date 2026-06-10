@@ -39,6 +39,7 @@ from omnifocus.errors import (
     OFError,
     OFWebDAVError,
 )
+from omnifocus.filters import filter_tasks
 from omnifocus.formatting import (
     render_folder_tree,
     render_folders_json,
@@ -321,9 +322,37 @@ def sync_cmd() -> None:
     help="Filter by tag name (substring, case-insensitive).",
 )
 @click.option(
+    "--folder",
+    "folder_name",
+    default=None,
+    metavar="NAME",
+    help="Filter by folder name (substring; includes nested subfolders).",
+)
+@click.option(
+    "--status",
+    type=click.Choice(["active", "completed", "dropped", "all"]),
+    default="active",
+    help="Base set of tasks to list.",
+)
+@click.option(
+    "--completed-on",
+    "completed_on",
+    default=None,
+    metavar="DATE",
+    help="Only tasks completed on this local date (YYYY-MM-DD, today, yesterday). "
+    "Implies --status completed.",
+)
+@click.option(
+    "--completed-since",
+    "completed_since",
+    default=None,
+    metavar="DATE",
+    help="Only tasks completed on or after this local date. Implies --status completed.",
+)
+@click.option(
     "--format", "fmt", type=click.Choice(["table", "json"]), default="table", help="Output format."
 )
-@click.option("--all", "show_all", is_flag=True, help="Include completed tasks.")
+@click.option("--all", "show_all", is_flag=True, help="Shorthand for --status all.")
 def tasks_cmd(
     inbox: bool,
     today: bool,
@@ -331,6 +360,10 @@ def tasks_cmd(
     due_only: bool,
     project_name: str | None,
     tag_name: str | None,
+    folder_name: str | None,
+    status: str,
+    completed_on: str | None,
+    completed_since: str | None,
     fmt: str,
     show_all: bool,
 ) -> None:
@@ -338,33 +371,24 @@ def tasks_cmd(
 
     async def _run_tasks() -> None:
         model = await _get_model()
-        tasks = list(model.tasks.values()) if show_all else model.active_tasks
-
-        if inbox:
-            tasks = [t for t in tasks if t.inbox]
-
-        if today:
-            now_date = datetime.today().date()
-            tasks = [t for t in tasks if t.due is not None and t.due.date() <= now_date]
-
-        if flagged:
-            tasks = [t for t in tasks if t.flagged]
-
-        if due_only:
-            tasks = [t for t in tasks if t.due is not None]
-
-        if project_name:
-            needle = project_name.lower()
-            matching_proj_ids = {
-                pid for pid, p in model.projects.items() if needle in p.name.lower()
-            }
-            tasks = [t for t in tasks if t.project_id in matching_proj_ids]
-
-        if tag_name:
-            matching_tag_ids = _matching_tag_ids(model, tag_name)
-            if not matching_tag_ids:
-                raise click.ClickException(f"No tag matching {tag_name!r}")
-            tasks = [task for task in tasks if matching_tag_ids.intersection(task.tag_ids)]
+        if tag_name and not _matching_tag_ids(model, tag_name):
+            raise click.ClickException(f"No tag matching {tag_name!r}")
+        try:
+            tasks = filter_tasks(
+                model,
+                status="all" if show_all else status,
+                inbox=inbox,
+                today=today,
+                flagged=flagged,
+                due=due_only,
+                project=project_name,
+                tag=tag_name,
+                folder=folder_name,
+                completed_on=completed_on,
+                completed_since=completed_since,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         if fmt == "json":
             render_tasks_json(tasks)

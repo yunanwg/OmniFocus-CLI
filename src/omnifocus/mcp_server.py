@@ -147,13 +147,33 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="list_tasks",
             description=(
-                "List active OmniFocus tasks. "
-                "Optionally filter by inbox, today (due today or overdue), "
-                "flagged, project name (substring), or tasks with a due date."
+                "List OmniFocus tasks. By default returns active (incomplete) tasks. "
+                "Use status=completed with completed_on/completed_since to see finished "
+                "work (e.g. what was completed today). Optionally filter by inbox, today "
+                "(due today or overdue), flagged, due date, project name, tag, or folder."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["active", "completed", "dropped", "all"],
+                        "description": "Base set: active (default), completed, dropped, or all",
+                    },
+                    "completed_on": {
+                        "type": "string",
+                        "description": (
+                            "Only tasks completed on this local date (ISO YYYY-MM-DD or "
+                            "today/yesterday). Implies status=completed."
+                        ),
+                    },
+                    "completed_since": {
+                        "type": "string",
+                        "description": (
+                            "Only tasks completed on or after this local date (ISO or "
+                            "today/yesterday). Implies status=completed."
+                        ),
+                    },
                     "inbox": {"type": "boolean", "description": "Inbox tasks only"},
                     "today": {"type": "boolean", "description": "Due today or overdue"},
                     "flagged": {"type": "boolean", "description": "Flagged tasks only"},
@@ -161,6 +181,10 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "description": "Project name substring"},
                     "tag": {"type": "string", "description": "Tag name substring"},
                     "tag_id": {"type": "string", "description": "Exact tag ID"},
+                    "folder": {
+                        "type": "string",
+                        "description": "Folder name substring (includes nested subfolders)",
+                    },
                     "limit": {"type": "integer", "description": "Max tasks to return (default 50)"},
                 },
             },
@@ -543,13 +567,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
     return await _service_text(
         _service().list_tasks(
+            status=args.get("status", "active"),
+            completed_on=args.get("completed_on"),
+            completed_since=args.get("completed_since"),
             inbox=bool(args.get("inbox")),
             today=bool(args.get("today")),
             flagged=bool(args.get("flagged")),
             due=bool(args.get("due")),
-            project=str(args["project"]) if "project" in args else None,
-            tag=str(args["tag"]) if "tag" in args else None,
-            tag_id=str(args["tag_id"]) if "tag_id" in args else None,
+            project=args.get("project"),
+            tag=args.get("tag"),
+            tag_id=args.get("tag_id"),
+            folder=args.get("folder"),
             limit=int(args.get("limit", 50)),
         )
     )

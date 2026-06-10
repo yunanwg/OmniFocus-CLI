@@ -422,6 +422,34 @@ class TestTasksCmd:
             result = runner.invoke(cli, ["tasks", "--all"])
         assert result.exit_code == 0
 
+    def test_tasks_status_completed(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--status", "completed"])
+        assert result.exit_code == 0
+
+    def test_tasks_completed_on(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--completed-on", "2026-06-10"])
+        assert result.exit_code == 0
+
+    def test_tasks_folder_filter(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--folder", "Work"])
+        assert result.exit_code == 0
+
+    def test_tasks_bad_completed_date_errors(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--completed-on", "garbage"])
+        assert result.exit_code != 0
+
     def test_tasks_webdav_error_propagated(self) -> None:
         runner = CliRunner()
         mock = _mock_store()

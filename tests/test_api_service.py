@@ -345,3 +345,47 @@ class TestDefaultApiService:
             "tags": 2,
         }
         store.load.assert_awaited_once_with(force_refresh=True)
+
+
+class TestListTasksFiltering:
+    @pytest.mark.asyncio
+    async def test_invalid_status_raises_422(self) -> None:
+        with pytest.raises(OFHTTPError) as excinfo:
+            await _service().list_tasks(status="bogus")
+        assert excinfo.value.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_unparseable_completed_date_raises_422(self) -> None:
+        with pytest.raises(OFHTTPError) as excinfo:
+            await _service().list_tasks(completed_on="not-a-date")
+        assert excinfo.value.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_status_completed_returns_completed_tasks(self) -> None:
+        model = _make_model()
+        model.tasks["done"] = Task(
+            id="done",
+            name="Done task",
+            parent_task_id="p1",
+            project_id="p1",
+            inbox=False,
+            completed=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            flagged=False,
+            due=None,
+            start=None,
+            hidden=None,
+            note="",
+            rank=0,
+            repetition_rule=None,
+            estimated_minutes=None,
+            tag_ids=(),
+            added=NOW,
+            modified=NOW,
+        )
+        results = await _service(model=model).list_tasks(status="completed")
+        assert {row["id"] for row in results} == {"done"}
+
+    @pytest.mark.asyncio
+    async def test_folder_filter_matches_subtree(self) -> None:
+        results = await _service().list_tasks(folder="Work")
+        assert {row["id"] for row in results} == {"t1"}
