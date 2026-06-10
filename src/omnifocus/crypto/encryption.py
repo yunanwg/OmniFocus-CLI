@@ -324,10 +324,16 @@ def encrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes, key_id: int = 1) 
     pad_len = (16 - len(header_core) % 16) % 16
     file_header = header_core + b"\x00" * pad_len
 
-    # Split plaintext into segments (at least one, even for empty data)
+    # Split plaintext into segments (at least one, even for empty data).
+    # The OmniFileEncryption reader requires the final segment to be strictly
+    # smaller than a full page; when the plaintext is a positive exact multiple
+    # of the segment size, append a trailing empty segment so the file remains
+    # decodable by OmniFocus (and by Omni's reference DecryptionExample.py).
     chunks = [data[i : i + _SEGMENT_SIZE] for i in range(0, len(data), _SEGMENT_SIZE)]
     if not chunks:
         chunks = [b""]
+    elif len(data) % _SEGMENT_SIZE == 0:
+        chunks.append(b"")
 
     seg_macs: list[bytes] = []
     segment_parts: list[bytes] = []

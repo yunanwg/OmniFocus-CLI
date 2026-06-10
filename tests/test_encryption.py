@@ -19,6 +19,7 @@ from omnifocus.crypto.encryption import (
     _FILE_HMAC_LEN,
     _SEG_IV_LEN,
     _SEG_MAC_LEN,
+    _SEGMENT_SIZE,
     _parse_slots,
     create_encrypted_bundle,
     decrypt,
@@ -146,6 +147,34 @@ class TestEncryptDecryptRoundTrip:
         big = b"X" * 200_000
         enc = encrypt_file(big, aes_key, hmac_key)
         assert decrypt_file(enc, aes_key, hmac_key) == big
+
+    def test_exact_segment_multiple_appends_trailing_empty_segment(self) -> None:
+        """Plaintext that is an exact multiple of the segment size must remain
+        decodable by OmniFocus, whose reader requires the final segment to be
+        strictly partial. ``encrypt_file`` therefore appends a trailing empty
+        segment. Regression for the 64 KiB-boundary interop bug found by
+        cross-validating against Omni's reference ``DecryptionExample.py``.
+        """
+        aes_key, hmac_key = _make_keys()
+        seg_overhead = _SEG_IV_LEN + _SEG_MAC_LEN
+        for n_segments in (1, 2):
+            data = b"Z" * (_SEGMENT_SIZE * n_segments)
+            enc = encrypt_file(data, aes_key, hmac_key)
+            assert decrypt_file(enc, aes_key, hmac_key) == data
+            _, offset = parse_file_header(enc)
+            full = n_segments * (seg_overhead + _SEGMENT_SIZE)
+            trailing_empty = seg_overhead  # IV + MAC + 0 bytes of ciphertext
+            assert len(enc) == offset + full + trailing_empty + _FILE_HMAC_LEN
+
+    def test_non_multiple_has_no_trailing_empty_segment(self) -> None:
+        """One byte short of a full segment stays a single partial segment."""
+        aes_key, hmac_key = _make_keys()
+        data = b"Z" * (_SEGMENT_SIZE - 1)
+        enc = encrypt_file(data, aes_key, hmac_key)
+        assert decrypt_file(enc, aes_key, hmac_key) == data
+        _, offset = parse_file_header(enc)
+        seg_overhead = _SEG_IV_LEN + _SEG_MAC_LEN
+        assert len(enc) == offset + seg_overhead + (_SEGMENT_SIZE - 1) + _FILE_HMAC_LEN
 
     def test_empty_plaintext(self) -> None:
         aes_key, hmac_key = _make_keys()
