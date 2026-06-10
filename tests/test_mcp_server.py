@@ -7,7 +7,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import asyncio
 import dataclasses
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -109,7 +109,9 @@ def _make_model() -> OFModel:
         note="",
         completed=None,
         last_review=datetime(2026, 3, 15, 12, 0, 0, tzinfo=UTC),
-        next_review=datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC),
+        # Relative to now so this project is never "due for review" — a fixed date
+        # here is a time bomb (it silently became due once real time passed it).
+        next_review=datetime.now(UTC) + timedelta(days=365),
         review_interval="@1m",
         tag_ids=("tag2",),
     )
