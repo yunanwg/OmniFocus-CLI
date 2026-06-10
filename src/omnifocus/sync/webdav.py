@@ -63,7 +63,7 @@ class WebDAVClient:
             base_url += "/"
         self._base_url = base_url
         self._client = httpx.AsyncClient(
-            auth=(username, password),
+            auth=httpx.DigestAuth(username, password),
             timeout=httpx.Timeout(timeout),
             follow_redirects=True,
         )
