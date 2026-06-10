@@ -90,6 +90,7 @@ from omnifocus.sync.protocol import (
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import (
     AddTaskPlan,
+    DeltaUpload,
     TaskWriter,
     WritePlan,
     WriterContext,
@@ -118,6 +119,17 @@ def _default_cache_dir() -> Path:
         return source_root / ".of-cache"
 
     return Path("/tmp/of-cache")  # noqa: S108
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write *data* to *path* atomically via a temp file plus ``os.replace``.
+
+    A crash mid-write leaves only a partial temp file; the target is updated by
+    a single atomic rename, so it is never observed truncated or corrupt.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -777,9 +789,17 @@ class OFocusStore:
         state = self._load_writer_state()
         identity = self._load_writer_identity()
         remote_clients = await self._load_remote_client_documents(bundle_state)
-        current_accepted_tail = current_tail_id(bundle_state, remote_clients)
-        if current_accepted_tail is None:
+        frontier = current_frontier_tail_ids(bundle_state, remote_clients)
+        if not frontier:
             raise OFError("Bundle has no known tail identifier")
+        if len(frontier) > 1:
+            raise OFError(
+                f"OmniFocus bundle frontier has diverged into {len(frontier)} tips "
+                f"({', '.join(frontier)}); sync your OmniFocus devices so the sync "
+                "history reconverges before writing headlessly — multi-parent merge "
+                "writes are not yet supported."
+            )
+        current_accepted_tail = frontier[0]
         next_tail_id = generate_id()
         template = self._select_client_template(bundle_state, remote_clients)
 
@@ -823,16 +843,12 @@ class OFocusStore:
         """Upload a multi-delta task creation plan."""
         if not plan.deltas:
             raise OFError("Task creation plan produced no deltas")
-
-        for delta in plan.deltas:
-            await self._upload_transaction(
-                delta.filename,
-                delta.data,
-                encrypted_plist=encrypted_plist,
-                key_slot=key_slot,
-                writer_state=writer_state,
-                upload_client_state=delta.refresh_client_after,
-            )
+        await self._upload_deltas(
+            plan.deltas,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
 
     async def _upload_write_plan(
         self,
@@ -845,15 +861,50 @@ class OFocusStore:
         """Upload a generic write plan."""
         if not plan.deltas:
             raise OFError("Write plan produced no deltas")
-        for delta in plan.deltas:
-            await self._upload_transaction(
-                delta.filename,
-                delta.data,
-                encrypted_plist=encrypted_plist,
-                key_slot=key_slot,
-                writer_state=writer_state,
-                upload_client_state=delta.refresh_client_after,
-            )
+        await self._upload_deltas(
+            plan.deltas,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+
+    async def _upload_deltas(
+        self,
+        deltas: tuple[DeltaUpload, ...],
+        *,
+        encrypted_plist: bytes | None,
+        key_slot: tuple[int, bytes, bytes] | None,
+        writer_state: _WriterState,
+    ) -> None:
+        """Upload every delta in a plan, rolling back partial writes on failure.
+
+        OmniFocus multi-delta writes are not transactional on the server; if a
+        later delta fails (for example a dropped connection) we best-effort
+        delete the files already uploaded so the bundle is not left half-written.
+        """
+        uploaded: list[str] = []
+        try:
+            for delta in deltas:
+                await self._upload_transaction(
+                    delta.filename,
+                    delta.data,
+                    encrypted_plist=encrypted_plist,
+                    key_slot=key_slot,
+                    writer_state=writer_state,
+                    upload_client_state=delta.refresh_client_after,
+                    uploaded=uploaded,
+                )
+        except Exception:
+            await self._rollback_uploads(uploaded)
+            raise
+
+    async def _rollback_uploads(self, filenames: list[str]) -> None:
+        """Best-effort delete of files uploaded before a multi-delta write failed."""
+        for name in reversed(filenames):
+            try:
+                await self._client.delete_file(name)
+            except OFWebDAVError:
+                log.warning("Partial-write rollback: could not delete %s", name)
 
     async def _upload_transaction(
         self,
@@ -864,6 +915,7 @@ class OFocusStore:
         key_slot: tuple[int, bytes, bytes] | None,
         writer_state: _WriterState,
         upload_client_state: bool = True,
+        uploaded: list[str] | None = None,
     ) -> None:
         """Upload a delta ZIP and matching ``.client`` state update."""
         upload_bytes = payload
@@ -876,11 +928,15 @@ class OFocusStore:
             upload_bytes = encrypt_file(payload, aes_key, hmac_key, key_id=slot_id)
 
         await self._client.put_file(filename, upload_bytes)
+        if uploaded is not None:
+            uploaded.append(filename)
         if upload_client_state:
             client_filename, client_payload = self._build_client_state_payload(
                 writer_state, filename
             )
             await self._client.put_file(client_filename, client_payload)
+            if uploaded is not None:
+                uploaded.append(client_filename)
         self.invalidate_cache()
 
         self._save_writer_state(
@@ -1159,7 +1215,7 @@ class OFocusStore:
     def _save_to_cache(self, payload: _CachePayload) -> None:
         """Persist *payload* to the pickle cache."""
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_path.write_bytes(pickle.dumps(payload))
+        _atomic_write_bytes(self._cache_path, pickle.dumps(payload))
         log.debug("Model cached to %s", self._cache_path)
 
     def invalidate_cache(self) -> None:
@@ -1216,7 +1272,7 @@ class OFocusStore:
             "device_name": identity.device_name,
             "registration_date": identity.registration_date.isoformat(),
         }
-        self._writer_identity_path.write_text(json.dumps(payload))
+        _atomic_write_bytes(self._writer_identity_path, json.dumps(payload).encode("utf-8"))
 
     def _load_writer_state(self) -> _WriterState | None:
         """Return the cached writer state if present and valid."""
@@ -1321,7 +1377,7 @@ class OFocusStore:
                 else None
             ),
         }
-        self._writer_state_path.write_text(json.dumps(payload))
+        _atomic_write_bytes(self._writer_state_path, json.dumps(payload).encode("utf-8"))
         self._save_writer_identity(
             _WriterIdentity(
                 client_id=state.client_id,

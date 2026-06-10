@@ -219,6 +219,17 @@ class WebDAVClient:
             content_type = "application/xml"
         await self._request("PUT", url, headers={"Content-Type": content_type}, content=data)
 
+    async def delete_file(self, filename: str) -> None:
+        """Delete a file from the bundle directory.
+
+        Args:
+            filename: Relative filename to delete.
+
+        Raises:
+            OFWebDAVError: On HTTP error (a 404 is raised like any other 4xx).
+        """
+        await self._request("DELETE", self._base_url + filename)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

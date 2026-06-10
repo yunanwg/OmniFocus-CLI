@@ -17,7 +17,12 @@ import pytest
 
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
-from omnifocus.store import OFocusStore, _default_cache_dir, _WriterState
+from omnifocus.store import (
+    OFocusStore,
+    _atomic_write_bytes,
+    _default_cache_dir,
+    _WriterState,
+)
 from omnifocus.sync.graph import (
     current_frontier_tail_ids,
     current_tail_id,
@@ -1799,6 +1804,59 @@ class TestWritePath:
         client.get_file = AsyncMock(return_value=make_zip(_EMPTY_XML))
         with pytest.raises(OFError, match="Bundle has no known tail identifier"):
             await store._prepare_writer()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_prepare_writer_rejects_diverged_frontier(self, tmp_path: Path) -> None:
+        """A forked DAG (two un-merged frontier tips) must refuse a headless write
+        rather than silently chaining onto one tip and leaving the fork unmerged."""
+        store, _ = _make_store(
+            tmp_path,
+            filenames=[
+                "00000000000000=snap+root.zip",
+                "20260101000000=root+tipA.zip",
+                "20260101000001=root+tipB.zip",
+            ],
+        )
+        with pytest.raises(OFError, match="diverged into 2 tips"):
+            await store._prepare_writer()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_partial_multi_delta_upload_rolls_back(self, tmp_path: Path) -> None:
+        """If a later delta upload fails, the files already PUT this write are
+        best-effort deleted so the bundle is not left half-written."""
+        store, client = _make_store(tmp_path)
+        put_calls = {"n": 0}
+
+        async def _put(name: str, data: bytes) -> None:
+            put_calls["n"] += 1
+            if put_calls["n"] == 3:
+                raise OFWebDAVError("upload boom", status_code=503)
+
+        client.put_file = AsyncMock(side_effect=_put)
+        deleted: list[str] = []
+
+        async def _delete(name: str) -> None:
+            deleted.append(name)
+            if name.endswith(".client"):
+                raise OFWebDAVError("already gone", status_code=404)
+
+        client.delete_file = AsyncMock(side_effect=_delete)
+
+        with pytest.raises(OFWebDAVError, match="upload boom"):
+            await store.add_task(name="probe", inbox=True)
+
+        # delta + client written before the 3rd-call failure were rolled back
+        assert any(name.endswith(".zip") for name in deleted)
+        assert any(name.endswith(".client") for name in deleted)
+
+    def test_atomic_write_bytes_replaces_without_leftover_temp(self, tmp_path: Path) -> None:
+        target = tmp_path / "state.json"
+        _atomic_write_bytes(target, b"first")
+        assert target.read_bytes() == b"first"
+        _atomic_write_bytes(target, b"second")
+        assert target.read_bytes() == b"second"
+        assert not (tmp_path / ".state.json.tmp").exists()
+        assert list(tmp_path.iterdir()) == [target]
 
     @pytest.mark.asyncio
     async def test_prepare_writer_uses_remote_template_only_for_tail_not_device_profile(

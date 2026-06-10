@@ -286,6 +286,32 @@ class TestPutFile:
 
 
 # ---------------------------------------------------------------------------
+# delete_file
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteFile:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_delete_success(self) -> None:
+        url = BASE_URL + "20260322160000=parent+new.zip"
+        respx.delete(url).mock(return_value=httpx.Response(204))
+        async with _make_client() as client:
+            await client.delete_file("20260322160000=parent+new.zip")
+        # No exception = success
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_delete_404_raises(self) -> None:
+        url = BASE_URL + "gone.zip"
+        respx.delete(url).mock(return_value=httpx.Response(404))
+        with pytest.raises(OFWebDAVError) as exc_info:
+            async with _make_client() as client:
+                await client.delete_file("gone.zip")
+        assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Retry logic
 # ---------------------------------------------------------------------------
 
