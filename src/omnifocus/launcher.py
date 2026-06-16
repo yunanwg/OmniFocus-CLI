@@ -15,12 +15,14 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import sys
 from collections.abc import Sequence
+from typing import NoReturn
 
 import click
 
 from omnifocus.cli import cli
 from omnifocus.http_api import main as http_main
 from omnifocus.mcp_server import main as mcp_main
+from omnifocus.mcp_server import run_http as mcp_run_http
 
 _CLI_FLAGS = {"--help", "-h", "--version"}
 _CLI_COMMANDS = set(cli.commands)
@@ -38,9 +40,50 @@ def _is_cli_invocation(argv: Sequence[str]) -> bool:
     return bool(argv) and (argv[0] in _CLI_FLAGS or argv[0] in _CLI_COMMANDS)
 
 
-def _raise_usage_error(message: str) -> None:
+def _raise_usage_error(message: str) -> NoReturn:
     """Raise a ClickException with usage guidance for the container launcher."""
     raise click.ClickException(f"{message}\n\n{_USAGE}")
+
+
+def _parse_mcp_http_flags(flags: Sequence[str]) -> tuple[str, int]:
+    """Parse the optional ``--host``/``--port`` flags for ``mcp --http``."""
+    host = "0.0.0.0"  # noqa: S104 — container listens on all interfaces (see mcp_server.run_http)
+    port = 8096
+    rest = list(flags)
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--host":
+            if not rest:
+                _raise_usage_error("--host requires a value.")
+            host = rest.pop(0)
+        elif flag == "--port":
+            if not rest:
+                _raise_usage_error("--port requires a value.")
+            value = rest.pop(0)
+            try:
+                port = int(value)
+            except ValueError:
+                _raise_usage_error(f"--port must be an integer, got {value!r}.")
+        else:
+            _raise_usage_error(f"Unknown 'mcp --http' option: {flag!r}.")
+    return host, port
+
+
+def _run_mcp(argv: Sequence[str]) -> None:
+    """Dispatch the ``mcp`` launcher mode: stdio by default, Streamable HTTP with ``--http``.
+
+    Bare ``mcp`` keeps the stdio transport (used by the fallback wrapper). ``mcp --http``
+    serves the in-process Streamable HTTP transport that replaces the supergateway bridge.
+    """
+    if not argv:
+        mcp_main()
+        return
+    if argv[0] != "--http":
+        _raise_usage_error(
+            "The 'mcp' mode takes no positional arguments; pass --http for Streamable HTTP."
+        )
+    host, port = _parse_mcp_http_flags(argv[1:])
+    mcp_run_http(host=host, port=port)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -52,9 +95,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     if args[0] == "mcp":
-        if len(args) > 1:
-            _raise_usage_error("The 'mcp' mode does not accept additional arguments.")
-        mcp_main()
+        _run_mcp(args[1:])
         return
 
     if args[0] == "http":

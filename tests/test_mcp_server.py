@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette.testclient import TestClient
 
 from omnifocus.errors import OFError
 from omnifocus.mcp_server import (
@@ -51,9 +52,11 @@ from omnifocus.mcp_server import (
     _text,
     _validate_folder_parent_change,
     _validate_tag_parent_change,
+    build_http_app,
     call_tool,
     list_tools,
     main,
+    run_http,
 )
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
@@ -1718,3 +1721,47 @@ class TestToolAnnotations:
         for name in ("complete_task", "complete_project", "drop_folder", "drop_tag"):
             assert tools[name].annotations.readOnlyHint is False
             assert tools[name].annotations.destructiveHint is True
+
+
+class TestHttpTransport:
+    def test_health_endpoint_returns_ok(self) -> None:
+        with TestClient(build_http_app()) as client:
+            response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+    def test_initialize_round_trip_over_streamable_http(self) -> None:
+        with TestClient(build_http_app(json_response=True)) as client:
+            response = client.post(
+                "/mcp",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+        assert response.status_code == 200
+        assert "mcp-session-id" in response.headers
+        assert response.json()["result"]["serverInfo"]["name"] == "omnifocus"
+
+    def test_run_http_serves_built_app_via_uvicorn(self) -> None:
+        sentinel_app = object()
+        with (
+            patch("omnifocus.mcp_server.build_http_app", return_value=sentinel_app) as build,
+            patch("omnifocus.mcp_server.uvicorn.run") as uvicorn_run,
+        ):
+            run_http(host="127.0.0.1", port=9100)
+        build.assert_called_once()
+        call = uvicorn_run.call_args
+        assert call.args[0] is sentinel_app
+        assert call.kwargs["host"] == "127.0.0.1"
+        assert call.kwargs["port"] == 9100

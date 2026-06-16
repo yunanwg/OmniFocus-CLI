@@ -63,13 +63,21 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
+import contextlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
+import uvicorn
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import TextContent, Tool, ToolAnnotations
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Mount, Route
+from starlette.types import Receive, Scope, Send
 
 from omnifocus.api_common import (
     folder_summary,
@@ -977,6 +985,85 @@ def main() -> None:
             )
 
     asyncio.run(_serve())
+
+
+def build_http_app(
+    *,
+    path: str = "/mcp",
+    health_path: str = "/healthz",
+    json_response: bool = False,
+    session_idle_timeout: float | None = 600.0,
+) -> Starlette:
+    """Build the Starlette app that serves this MCP server over Streamable HTTP.
+
+    ``StreamableHTTPSessionManager`` wraps the same in-process ``server`` — there
+    is NO per-session child process. The decrypted OmniFocus bundle stays warm
+    across requests, and client cancellations are handled by the SDK's anyio task
+    group instead of crashing the transport. This replaces the supergateway proxy
+    that fronted the stdio MCP and bit us three times: the 2026-06-14 memory leak
+    (orphaned children → 14 GiB), the 2026-06-15 zombie pileup, and the 2026-06-16
+    cancel-race that took the whole bridge down on a slow cold-cache query.
+
+    The endpoint speaks plaintext HTTP — TLS terminates upstream at the Cloudflare
+    tunnel edge, and local agents reach it over loopback. Health lives at
+    ``health_path`` for the container/orchestrator probe.
+    """
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        json_response=json_response,
+        stateless=False,
+        session_idle_timeout=session_idle_timeout,
+    )
+
+    async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
+        await session_manager.handle_request(scope, receive, send)
+
+    async def health(_request: Request) -> Response:
+        return JSONResponse({"status": "ok"})
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            yield
+
+    return Starlette(
+        routes=[
+            Route(health_path, health, methods=["GET"]),
+            Mount(path, app=handle_mcp),
+        ],
+        lifespan=lifespan,
+    )
+
+
+def run_http(
+    *,
+    host: str = "0.0.0.0",  # noqa: S104 — container must listen on all interfaces (cloudflared reaches of-bridge:8096 on the proxy net)
+    port: int = 8096,
+    path: str = "/mcp",
+    health_path: str = "/healthz",
+    json_response: bool = False,
+    session_idle_timeout: float | None = 600.0,
+) -> None:
+    """Serve the OmniFocus MCP server over Streamable HTTP via uvicorn.
+
+    Single long-running process; no supergateway, no per-session fork. See
+    :func:`build_http_app` for why this transport replaces the old proxy.
+    """
+    app = build_http_app(
+        path=path,
+        health_path=health_path,
+        json_response=json_response,
+        session_idle_timeout=session_idle_timeout,
+    )
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=False,
+        server_header=False,
+        date_header=False,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
