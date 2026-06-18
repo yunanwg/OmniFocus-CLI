@@ -410,6 +410,47 @@ class TestLoad:
         assert transaction_filenames_for_frontier(state, ()) == []
 
 
+class TestDeepDeltaChain:
+    """A long, near-linear delta chain must resolve without blowing the Python
+    recursion stack.
+
+    Regression (2026-06-18): a 526-deep live OmniFocus chain raised
+    ``RecursionError: maximum recursion depth exceeded`` on every read. The DAG
+    walks in ``sync/graph.py`` recursed once per delta, and the
+    ``all(visit(p) for p in parents)`` generator expression added a second frame
+    per level, so each delta cost two frames — ~500 deltas exceeded the default
+    1000-frame limit. ``depth`` here is well past that threshold.
+    """
+
+    def test_deep_linear_chain_resolves_without_recursion_error(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from omnifocus.sync.protocol import build_bundle_state
+
+        depth = 2000
+        base_ts = datetime(2026, 1, 1, tzinfo=UTC)
+        filenames = ["00000000000000=base+t0.zip"]
+        for i in range(depth):
+            stamp = (base_ts + timedelta(seconds=i)).strftime("%Y%m%d%H%M%S")
+            filenames.append(f"{stamp}=t{i}+t{i + 1}.zip")
+        state = build_bundle_state(filenames)
+        head = f"t{depth}"
+
+        # Frontier discovery: tail_reachable_from_baseline + maximal_tail_ids -> tail_depends_on
+        assert current_frontier_tail_ids(state, {}) == (head,)
+        assert current_tail_id(state, {}) == head
+
+        # Direct reachability / dependency walks down the whole chain.
+        assert tail_reachable_from_baseline(state, head) is True
+        assert tail_depends_on(state, head, "t0") is True
+
+        # Delta selection + topological ordering (parent-before-child).
+        ordered = transaction_filenames_for_frontier(state, (head,))
+        assert len(ordered) == depth
+        assert ordered[0].endswith("=t0+t1.zip")
+        assert ordered[-1].endswith(f"=t{depth - 1}+t{depth}.zip")
+
+
 class TestCache:
     @pytest.mark.asyncio
     async def test_cache_file_created(self, tmp_path: Path) -> None:
