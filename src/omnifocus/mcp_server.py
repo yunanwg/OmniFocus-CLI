@@ -989,7 +989,6 @@ def main() -> None:
 
 def build_http_app(
     *,
-    path: str = "/mcp",
     health_path: str = "/healthz",
     json_response: bool = False,
     session_idle_timeout: float | None = 600.0,
@@ -1007,6 +1006,17 @@ def build_http_app(
     The endpoint speaks plaintext HTTP — TLS terminates upstream at the Cloudflare
     tunnel edge, and local agents reach it over loopback. Health lives at
     ``health_path`` for the container/orchestrator probe.
+
+    The MCP transport is mounted at the app root rather than under a ``/mcp``
+    prefix on purpose. Starlette's ``Mount("/mcp", ...)`` 307-redirects the bare
+    ``/mcp`` to ``/mcp/``; behind the CF tunnel that ``Location`` is rewritten to
+    the internal origin (``http://of-bridge:8096/mcp/`` — unreachable, and scheme
+    downgraded to http), so a remote MCP client that POSTs to ``/mcp`` without a
+    trailing slash never completes ``initialize`` even after OAuth succeeds
+    (the Notion "Login" loop, 2026-06-18). The session manager routes on method /
+    headers / session id, not on the URL path, so a root mount serves ``/mcp`` and
+    ``/mcp/`` identically with no redirect — matching the retired supergateway's
+    behaviour. ``health_path`` is registered first so the probe still wins.
     """
     session_manager = StreamableHTTPSessionManager(
         app=server,
@@ -1029,7 +1039,7 @@ def build_http_app(
     return Starlette(
         routes=[
             Route(health_path, health, methods=["GET"]),
-            Mount(path, app=handle_mcp),
+            Mount("", app=handle_mcp),
         ],
         lifespan=lifespan,
     )
@@ -1039,7 +1049,6 @@ def run_http(
     *,
     host: str = "0.0.0.0",  # noqa: S104 — container must listen on all interfaces (cloudflared reaches of-bridge:8096 on the proxy net)
     port: int = 8096,
-    path: str = "/mcp",
     health_path: str = "/healthz",
     json_response: bool = False,
     session_idle_timeout: float | None = 600.0,
@@ -1050,7 +1059,6 @@ def run_http(
     :func:`build_http_app` for why this transport replaces the old proxy.
     """
     app = build_http_app(
-        path=path,
         health_path=health_path,
         json_response=json_response,
         session_idle_timeout=session_idle_timeout,

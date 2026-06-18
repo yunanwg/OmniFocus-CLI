@@ -1753,6 +1753,36 @@ class TestHttpTransport:
         assert "mcp-session-id" in response.headers
         assert response.json()["result"]["serverInfo"]["name"] == "omnifocus"
 
+    @pytest.mark.parametrize("endpoint", ["/mcp", "/mcp/"])
+    def test_mcp_endpoint_serves_without_redirect(self, endpoint: str) -> None:
+        # Regression (2026-06-18): a Mount("/mcp", ...) 307-redirects the bare
+        # "/mcp" to "/mcp/"; behind the CF tunnel that Location points at the
+        # unreachable internal origin, so a remote client POSTing to "/mcp" never
+        # finishes initialize (Notion "Login" loop). The root mount must serve both
+        # "/mcp" and "/mcp/" directly, with no redirect.
+        with TestClient(build_http_app(json_response=True)) as client:
+            response = client.post(
+                endpoint,
+                follow_redirects=False,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+        assert response.status_code == 200
+        assert "location" not in response.headers
+        assert "mcp-session-id" in response.headers
+
     def test_run_http_serves_built_app_via_uvicorn(self) -> None:
         sentinel_app = object()
         with (
