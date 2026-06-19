@@ -91,18 +91,27 @@ def topologically_sorted_delta_filenames(
     ordered: list[str] = []
     visited: set[str] = set()
 
-    def visit(tail_id: str) -> None:
-        if tail_id in visited or tail_id not in selected_tail_ids:
-            return
-        delta = deltas_by_tail[tail_id]
-        for parent_tail_id in delta.parent_tail_ids:
-            visit(parent_tail_id)
-        visited.add(tail_id)
-        ordered.append(delta.filename)
-
-    for delta in state.deltas:
-        if delta.tail_id in selected_tail_ids:
-            visit(delta.tail_id)
+    # Iterative post-order DFS with an explicit stack (not recursion) so a long
+    # delta chain cannot exhaust the Python call stack. Each tail is pushed once
+    # to expand its parents (``emit=False``) and once to be appended after every
+    # parent has been emitted (``emit=True``).
+    for root in state.deltas:
+        if root.tail_id not in selected_tail_ids:
+            continue
+        stack: list[tuple[str, bool]] = [(root.tail_id, False)]
+        while stack:
+            tail_id, emit = stack.pop()
+            if tail_id not in selected_tail_ids:
+                continue
+            if emit:
+                visited.add(tail_id)
+                ordered.append(deltas_by_tail[tail_id].filename)
+                continue
+            if tail_id in visited:
+                continue
+            stack.append((tail_id, True))
+            for parent_tail_id in reversed(deltas_by_tail[tail_id].parent_tail_ids):
+                stack.append((parent_tail_id, False))
     return ordered
 
 
@@ -131,26 +140,33 @@ def reachable_delta_tail_ids(
     baseline_tail = state.baseline.tail_id
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     selected: set[str] = set()
-    visiting: set[str] = set()
+    on_path: set[str] = set()
 
-    def visit(tail_id: str) -> None:
-        if tail_id == baseline_tail:
-            return
-        if tail_id in selected:
-            return
-        if tail_id in visiting:
-            raise OFError(f"Detected a cycle while resolving delta DAG at tail {tail_id!r}")
-        delta = deltas_by_tail.get(tail_id)
-        if delta is None:
-            raise OFError(f"Could not resolve the current OmniFocus delta DAG for tail {tail_id!r}")
-        visiting.add(tail_id)
-        for parent_tail_id in delta.parent_tail_ids:
-            visit(parent_tail_id)
-        visiting.remove(tail_id)
-        selected.add(tail_id)
-
-    for tail_id in frontier_tail_identifiers:
-        visit(tail_id)
+    # Iterative DFS with an explicit stack (not recursion) so a long chain cannot
+    # exhaust the Python call stack. ``on_path`` holds the tails on the current
+    # root-to-node path for cycle detection: a tail is added when first expanded
+    # and removed once all its parents are selected (the ``done=True`` marker).
+    for start in frontier_tail_identifiers:
+        stack: list[tuple[str, bool]] = [(start, False)]
+        while stack:
+            tail_id, done = stack.pop()
+            if done:
+                on_path.discard(tail_id)
+                selected.add(tail_id)
+                continue
+            if tail_id == baseline_tail or tail_id in selected:
+                continue
+            if tail_id in on_path:
+                raise OFError(f"Detected a cycle while resolving delta DAG at tail {tail_id!r}")
+            delta = deltas_by_tail.get(tail_id)
+            if delta is None:
+                raise OFError(
+                    f"Could not resolve the current OmniFocus delta DAG for tail {tail_id!r}"
+                )
+            on_path.add(tail_id)
+            stack.append((tail_id, True))
+            for parent_tail_id in reversed(delta.parent_tail_ids):
+                stack.append((parent_tail_id, False))
 
     return selected
 
@@ -165,26 +181,37 @@ def tail_reachable_from_baseline(state: BundleState, tail_id: str) -> bool:
 
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     memo: dict[str, bool] = {}
+    on_path: set[str] = set()
 
-    def visit(cursor: str, visiting: set[str]) -> bool:
+    # Iterative post-order DFS with an explicit stack (not recursion) so a long
+    # chain cannot exhaust the Python call stack. A tail is reachable iff it is
+    # the baseline or every parent is reachable; a tail re-entered while still on
+    # the current path (a cycle) or whose delta is missing is unreachable.
+    stack: list[tuple[str, bool]] = [(tail_id, False)]
+    while stack:
+        cursor, resolved = stack.pop()
+        if resolved:
+            memo[cursor] = all(memo[parent] for parent in deltas_by_tail[cursor].parent_tail_ids)
+            on_path.discard(cursor)
+            continue
         if cursor == baseline_tail:
-            return True
+            memo[cursor] = True
+            continue
         if cursor in memo:
-            return memo[cursor]
-        if cursor in visiting:
+            continue
+        if cursor in on_path:
             memo[cursor] = False
-            return False
+            continue
         delta = deltas_by_tail.get(cursor)
         if delta is None:
             memo[cursor] = False
-            return False
-        visiting.add(cursor)
-        result = all(visit(parent_tail_id, visiting) for parent_tail_id in delta.parent_tail_ids)
-        visiting.remove(cursor)
-        memo[cursor] = result
-        return result
+            continue
+        on_path.add(cursor)
+        stack.append((cursor, True))
+        for parent in delta.parent_tail_ids:
+            stack.append((parent, False))
 
-    return visit(tail_id, set())
+    return memo[tail_id]
 
 
 def tail_depends_on(state: BundleState, tail_id: str, ancestor_tail_id: str) -> bool:
@@ -194,15 +221,20 @@ def tail_depends_on(state: BundleState, tail_id: str, ancestor_tail_id: str) -> 
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     visited: set[str] = set()
 
-    def visit(cursor: str) -> bool:
+    # Iterative DFS with an explicit stack (not recursion) so a long chain cannot
+    # exhaust the Python call stack; returns as soon as a delta listing
+    # ``ancestor_tail_id`` among its parents is reached.
+    stack: list[str] = [tail_id]
+    while stack:
+        cursor = stack.pop()
         if cursor in visited:
-            return False
+            continue
         visited.add(cursor)
         delta = deltas_by_tail.get(cursor)
         if delta is None:
-            return False
+            continue
         if ancestor_tail_id in delta.parent_tail_ids:
             return True
-        return any(visit(parent_tail_id) for parent_tail_id in delta.parent_tail_ids)
+        stack.extend(delta.parent_tail_ids)
 
-    return visit(tail_id)
+    return False
