@@ -451,6 +451,40 @@ class TestDeepDeltaChain:
         assert ordered[-1].endswith(f"=t{depth - 1}+t{depth}.zip")
 
 
+class TestBundleFingerprint:
+    """The cache fingerprint must ignore ``.client`` churn (every device writes a
+    new timestamped client-state file on each sync) when the model is a pure
+    function of the baseline + deltas, yet still track client state in the
+    degenerate case where the frontier is derived from client-advertised tails.
+    """
+
+    def test_ignores_client_churn_when_a_delta_frontier_exists(self) -> None:
+        from omnifocus.store import _bundle_fingerprint
+
+        deltas = ["00000000000000=base+t0.zip", "20260324100000=t0+t1.zip"]
+        # Same data, only a client re-synced (new timestamped .client file).
+        fp_a = _bundle_fingerprint([*deltas, "20260324100002=mac.client"])
+        fp_b = _bundle_fingerprint([*deltas, "20260324100099=mac.client"])
+        assert fp_a == fp_b
+
+    def test_tracks_clients_without_a_delta_frontier(self) -> None:
+        from omnifocus.store import _bundle_fingerprint
+
+        # Baseline only → no delta-derived frontier, so the frontier falls back to
+        # client-advertised tails and the model genuinely depends on client state.
+        fp_a = _bundle_fingerprint(["00000000000000=base+t0.zip", "20260324100002=a.client"])
+        fp_b = _bundle_fingerprint(["00000000000000=base+t0.zip", "20260324100099=b.client"])
+        assert fp_a != fp_b
+
+    def test_changes_when_a_delta_is_added(self) -> None:
+        from omnifocus.store import _bundle_fingerprint
+
+        deltas = ["00000000000000=base+t0.zip", "20260324100000=t0+t1.zip"]
+        assert _bundle_fingerprint(deltas) != _bundle_fingerprint(
+            [*deltas, "20260324100001=t1+t2.zip"]
+        )
+
+
 class TestCache:
     @pytest.mark.asyncio
     async def test_cache_file_created(self, tmp_path: Path) -> None:
