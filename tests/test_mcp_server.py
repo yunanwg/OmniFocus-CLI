@@ -1791,7 +1791,31 @@ class TestHttpTransport:
         ):
             run_http(host="127.0.0.1", port=9100)
         build.assert_called_once()
+        assert build.call_args.kwargs["warm"] is True
         call = uvicorn_run.call_args
         assert call.args[0] is sentinel_app
         assert call.kwargs["host"] == "127.0.0.1"
         assert call.kwargs["port"] == 9100
+
+    def test_startup_warms_model_when_requested(self) -> None:
+        # warm=True pre-loads the model during lifespan startup so the first
+        # client read does not pay the full cold sync.
+        with patch("omnifocus.mcp_server._load_model", new=AsyncMock()) as load:
+            with TestClient(build_http_app(warm=True)) as client:
+                assert client.get("/healthz").status_code == 200
+        load.assert_awaited_once()
+
+    def test_no_startup_warm_by_default(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", new=AsyncMock()) as load:
+            with TestClient(build_http_app()) as client:
+                assert client.get("/healthz").status_code == 200
+        load.assert_not_awaited()
+
+    def test_startup_warm_is_best_effort(self) -> None:
+        # A failing warm-up must not crash startup; the server still serves and
+        # the next read retries the load lazily.
+        failing = AsyncMock(side_effect=RuntimeError("sync unavailable"))
+        with patch("omnifocus.mcp_server._load_model", new=failing):
+            with TestClient(build_http_app(warm=True)) as client:
+                assert client.get("/healthz").status_code == 200
+        failing.assert_awaited_once()

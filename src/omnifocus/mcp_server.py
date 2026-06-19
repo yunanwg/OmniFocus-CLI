@@ -65,6 +65,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
@@ -103,6 +104,8 @@ from omnifocus.store import OFocusStore
 
 server: Server = Server("omnifocus")
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -136,6 +139,19 @@ async def _load_model(force: bool = False) -> OFModel:
     """Load the current OFModel via the store."""
     async with OFocusStore.from_env() as store:
         return await store.load(force_refresh=force)
+
+
+async def _warm_model() -> None:
+    """Best-effort pre-load of the model so the first client request skips the
+    cold sync (pull + decrypt + parse of the whole delta chain).
+
+    Run once at HTTP startup. Failures (e.g. the sync server is unreachable) are
+    swallowed so they never crash the server — the next read simply syncs lazily.
+    """
+    try:
+        await _load_model()
+    except Exception:
+        logger.warning("startup model warm-up failed; first read will sync lazily", exc_info=True)
 
 
 def _service() -> StoreBackedApiService:
@@ -989,6 +1005,7 @@ def main() -> None:
 
 def build_http_app(
     *,
+    warm: bool = False,
     health_path: str = "/healthz",
     json_response: bool = False,
     session_idle_timeout: float | None = 600.0,
@@ -1017,6 +1034,10 @@ def build_http_app(
     headers / session id, not on the URL path, so a root mount serves ``/mcp`` and
     ``/mcp/`` identically with no redirect — matching the retired supergateway's
     behaviour. ``health_path`` is registered first so the probe still wins.
+
+    When ``warm`` is set the model is pre-loaded once during lifespan startup
+    (best-effort) so the first client request skips the cold sync; ``run_http``
+    enables it for the long-running server.
     """
     session_manager = StreamableHTTPSessionManager(
         app=server,
@@ -1034,6 +1055,8 @@ def build_http_app(
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         async with session_manager.run():
+            if warm:
+                await _warm_model()
             yield
 
     return Starlette(
@@ -1059,6 +1082,7 @@ def run_http(
     :func:`build_http_app` for why this transport replaces the old proxy.
     """
     app = build_http_app(
+        warm=True,
         health_path=health_path,
         json_response=json_response,
         session_idle_timeout=session_idle_timeout,
