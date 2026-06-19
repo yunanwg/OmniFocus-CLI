@@ -23,21 +23,34 @@ def current_tail_id(
     return frontier[0] if frontier else None
 
 
+def delta_derived_frontier_tail_ids(state: BundleState) -> tuple[str, ...]:
+    """Return the frontier tails implied purely by the delta DAG.
+
+    These are the maximal sink tails (delta tails no other delta lists as a parent)
+    reachable from the baseline — the frontier the read model is built from in the
+    normal case, independent of client state. Empty when no such tail exists, in
+    which case the frontier must fall back to client-advertised tails (see
+    :func:`current_frontier_tail_ids`).
+    """
+    if not (state.deltas and state.baseline.tail_id is not None):
+        return ()
+    sink_tails = tuple(
+        delta.tail_id
+        for delta in reversed(state.deltas)
+        if is_frontier_tail(state, delta.tail_id)
+        and tail_reachable_from_baseline(state, delta.tail_id)
+    )
+    return maximal_tail_ids(state, sink_tails)
+
+
 def current_frontier_tail_ids(
     state: BundleState,
     remote_clients: dict[str, ClientStateDocument],
 ) -> tuple[str, ...]:
     """Return the current frontier tails used to build the read model."""
-    if state.deltas and state.baseline.tail_id is not None:
-        sink_tails = tuple(
-            delta.tail_id
-            for delta in reversed(state.deltas)
-            if is_frontier_tail(state, delta.tail_id)
-            and tail_reachable_from_baseline(state, delta.tail_id)
-        )
-        maximal_sink_tails = maximal_tail_ids(state, sink_tails)
-        if maximal_sink_tails:
-            return maximal_sink_tails
+    delta_frontier = delta_derived_frontier_tail_ids(state)
+    if delta_frontier:
+        return delta_frontier
 
     reachable_client_tails: list[str] = []
     for ref in reversed(state.clients):

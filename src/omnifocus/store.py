@@ -80,6 +80,7 @@ from omnifocus.sync.client_state import (
 from omnifocus.sync.graph import (
     current_frontier_tail_ids,
     current_tail_id,
+    delta_derived_frontier_tail_ids,
     transaction_filenames_for_frontier,
 )
 from omnifocus.sync.protocol import (
@@ -1410,12 +1411,26 @@ def _webdav_password_from_env() -> str:
 
 
 def _bundle_fingerprint(filenames: list[str]) -> BundleFingerprint:
-    """Return a deterministic fingerprint for the current remote bundle listing."""
+    """Return a deterministic fingerprint for the current remote bundle listing.
+
+    ``.client`` files churn constantly — every device writes a new timestamped one
+    on each sync — but they only influence the parsed model when the frontier is
+    derived from client-advertised tails, i.e. when there is no delta-derived
+    frontier. Including them unconditionally made routine multi-device syncing
+    invalidate the cache and force a full re-sync of the whole delta chain. So fold
+    them into the fingerprint ONLY in that degenerate case; otherwise the model is a
+    pure function of the baseline + deltas and client churn must be ignored.
+    """
     state = build_bundle_state(filenames)
+    clients = (
+        ()
+        if delta_derived_frontier_tail_ids(state)
+        else tuple(client.filename for client in state.clients)
+    )
     return (
         state.baseline.filename,
         tuple(delta.filename for delta in state.deltas),
-        tuple(client.filename for client in state.clients),
+        clients,
     )
 
 
