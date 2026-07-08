@@ -1008,6 +1008,7 @@ def build_http_app(
     warm: bool = False,
     health_path: str = "/healthz",
     json_response: bool = False,
+    stateless: bool = False,
     session_idle_timeout: float | None = 600.0,
 ) -> Starlette:
     """Build the Starlette app that serves this MCP server over Streamable HTTP.
@@ -1035,6 +1036,20 @@ def build_http_app(
     ``/mcp/`` identically with no redirect — matching the retired supergateway's
     behaviour. ``health_path`` is registered first so the probe still wins.
 
+    In production the session manager runs STATELESS (``run_http`` and the
+    ``mcp --http`` container entrypoint pass ``stateless=True``): every request is
+    self-contained, no per-session state is held, and no ``Mcp-Session-Id`` is
+    issued. This is deliberate. A stateful in-process session idle-expires
+    (``session_idle_timeout``) and does not survive the mcp-remote bridge's
+    "initialize at startup, call the tool minutes later" pattern through the
+    Cloudflare edge: the keepalive SSE stream is cut, the session is evicted, and
+    every later request fails with ``-32600 Session not found`` (POST) or ``404``
+    (GET SSE reconnect) -- the 2026-07-08 Claude Desktop hang. First-party clients
+    (Claude Code, claude.ai, Notion) never tripped it because they fire
+    ``initialize`` and the call back-to-back. Stateless removes the whole failure
+    class; OmniFocus exposes no server->client notifications, so nothing is lost.
+    Pass ``--stateful`` (``stateless=False``) to restore per-session state.
+
     When ``warm`` is set the model is pre-loaded once during lifespan startup
     (best-effort) so the first client request skips the cold sync; ``run_http``
     enables it for the long-running server.
@@ -1042,8 +1057,10 @@ def build_http_app(
     session_manager = StreamableHTTPSessionManager(
         app=server,
         json_response=json_response,
-        stateless=False,
-        session_idle_timeout=session_idle_timeout,
+        stateless=stateless,
+        # The SDK forbids session_idle_timeout in stateless mode (there are no
+        # sessions to expire), so only pass it through when running stateful.
+        session_idle_timeout=None if stateless else session_idle_timeout,
     )
 
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
@@ -1074,6 +1091,7 @@ def run_http(
     port: int = 8096,
     health_path: str = "/healthz",
     json_response: bool = False,
+    stateless: bool = True,
     session_idle_timeout: float | None = 600.0,
 ) -> None:
     """Serve the OmniFocus MCP server over Streamable HTTP via uvicorn.
@@ -1085,6 +1103,7 @@ def run_http(
         warm=True,
         health_path=health_path,
         json_response=json_response,
+        stateless=stateless,
         session_idle_timeout=session_idle_timeout,
     )
     uvicorn.run(

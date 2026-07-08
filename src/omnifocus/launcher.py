@@ -45,10 +45,16 @@ def _raise_usage_error(message: str) -> NoReturn:
     raise click.ClickException(f"{message}\n\n{_USAGE}")
 
 
-def _parse_mcp_http_flags(flags: Sequence[str]) -> tuple[str, int]:
-    """Parse the optional ``--host``/``--port`` flags for ``mcp --http``."""
+def _parse_mcp_http_flags(flags: Sequence[str]) -> tuple[str, int, bool]:
+    """Parse the optional ``--host``/``--port``/``--stateful`` flags for ``mcp --http``.
+
+    Returns ``(host, port, stateless)``. The Streamable HTTP transport defaults to
+    STATELESS (see :func:`omnifocus.mcp_server.build_http_app`); ``--stateful``
+    opts back into per-session state.
+    """
     host = "0.0.0.0"  # noqa: S104 — container listens on all interfaces (see mcp_server.run_http)
     port = 8096
+    stateless = True
     rest = list(flags)
     while rest:
         flag = rest.pop(0)
@@ -64,9 +70,11 @@ def _parse_mcp_http_flags(flags: Sequence[str]) -> tuple[str, int]:
                 port = int(value)
             except ValueError:
                 _raise_usage_error(f"--port must be an integer, got {value!r}.")
+        elif flag == "--stateful":
+            stateless = False
         else:
             _raise_usage_error(f"Unknown 'mcp --http' option: {flag!r}.")
-    return host, port
+    return host, port, stateless
 
 
 def _run_mcp(argv: Sequence[str]) -> None:
@@ -82,8 +90,8 @@ def _run_mcp(argv: Sequence[str]) -> None:
         _raise_usage_error(
             "The 'mcp' mode takes no positional arguments; pass --http for Streamable HTTP."
         )
-    host, port = _parse_mcp_http_flags(argv[1:])
-    mcp_run_http(host=host, port=port)
+    host, port, stateless = _parse_mcp_http_flags(argv[1:])
+    mcp_run_http(host=host, port=port, stateless=stateless)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

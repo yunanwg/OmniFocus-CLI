@@ -63,12 +63,12 @@ class TestLauncher:
     def test_mcp_http_dispatches_with_defaults(self) -> None:
         with patch("omnifocus.launcher.mcp_run_http") as mock_http:
             main(["mcp", "--http"])
-        mock_http.assert_called_once_with(host="0.0.0.0", port=8096)  # noqa: S104
+        mock_http.assert_called_once_with(host="0.0.0.0", port=8096, stateless=True)  # noqa: S104
 
     def test_mcp_http_parses_host_and_port(self) -> None:
         with patch("omnifocus.launcher.mcp_run_http") as mock_http:
             main(["mcp", "--http", "--host", "127.0.0.1", "--port", "9000"])
-        mock_http.assert_called_once_with(host="127.0.0.1", port=9000)
+        mock_http.assert_called_once_with(host="127.0.0.1", port=9000, stateless=True)
 
     def test_mcp_http_rejects_unknown_flag(self) -> None:
         with pytest.raises(click.ClickException, match="Unknown 'mcp --http' option"):
@@ -85,6 +85,16 @@ class TestLauncher:
     def test_mcp_http_port_must_be_integer(self) -> None:
         with pytest.raises(click.ClickException, match="--port must be an integer"):
             main(["mcp", "--http", "--port", "notanumber"])
+
+    def test_mcp_http_defaults_to_stateless(self) -> None:
+        with patch("omnifocus.launcher.mcp_run_http") as mock_http:
+            main(["mcp", "--http"])
+        assert mock_http.call_args.kwargs["stateless"] is True
+
+    def test_mcp_http_stateful_flag_opts_out_of_stateless(self) -> None:
+        with patch("omnifocus.launcher.mcp_run_http") as mock_http:
+            main(["mcp", "--http", "--stateful"])
+        mock_http.assert_called_once_with(host="0.0.0.0", port=8096, stateless=False)  # noqa: S104
 
     def test_console_main_exits_cleanly_on_click_exception(self) -> None:
         with patch("omnifocus.launcher.main", side_effect=click.ClickException("boom")):

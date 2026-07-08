@@ -1753,6 +1753,44 @@ class TestHttpTransport:
         assert "mcp-session-id" in response.headers
         assert response.json()["result"]["serverInfo"]["name"] == "omnifocus"
 
+    def test_stateless_serves_request_without_a_session(self) -> None:
+        # Regression (2026-07-08): of-bridge ran STATEFUL, so once a session was
+        # evicted by idle-timeout -- the mcp-remote "initialize at startup, call the
+        # tool minutes later" pattern through the Cloudflare edge -- every later
+        # request failed with -32600 "Session not found" (POST) / 404 (GET SSE).
+        # Stateless mode issues no session id and serves each request on its own, so
+        # a call arriving without a session must succeed instead of being rejected.
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        with TestClient(build_http_app(stateless=True, json_response=True)) as client:
+            initialize = client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+            assert initialize.status_code == 200
+            assert "mcp-session-id" not in initialize.headers
+            listed = client.post(
+                "/mcp",
+                headers=headers,
+                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            )
+        assert listed.status_code == 200
+        payload = listed.json()
+        assert "error" not in payload
+        assert payload["result"]["tools"]
+
     @pytest.mark.parametrize("endpoint", ["/mcp", "/mcp/"])
     def test_mcp_endpoint_serves_without_redirect(self, endpoint: str) -> None:
         # Regression (2026-06-18): a Mount("/mcp", ...) 307-redirects the bare
@@ -1792,6 +1830,7 @@ class TestHttpTransport:
             run_http(host="127.0.0.1", port=9100)
         build.assert_called_once()
         assert build.call_args.kwargs["warm"] is True
+        assert build.call_args.kwargs["stateless"] is True
         call = uvicorn_run.call_args
         assert call.args[0] is sentinel_app
         assert call.kwargs["host"] == "127.0.0.1"
