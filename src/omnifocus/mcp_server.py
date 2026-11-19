@@ -67,6 +67,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import date
 from typing import Any, cast
 
 import uvicorn
@@ -97,6 +98,7 @@ from omnifocus.errors import OFError
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel
 from omnifocus.store import OFocusStore
+from omnifocus.write_contract import WriteContract, load_contract
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -207,9 +209,52 @@ def _annotate(tools: list[Tool]) -> list[Tool]:
     return annotated
 
 
+_SOURCE_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Who is writing: '<surface> · <channel or routine>', e.g. 'Claude Code · rental "
+        "sweep'. Becomes note line 1 as 'via <source> · YYYY-MM-DD'."
+    ),
+}
+_USER_ASKED_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Only when the user explicitly asked for a project, tag, date or flag on this "
+        "task: the user's own words. Lifts the write contract's field checks; logged."
+    ),
+}
+
+
+def _apply_contract_schema(tools: list[Tool], contract: WriteContract | None) -> list[Tool]:
+    """Advertise the write-contract parameters when the contract is on."""
+    if contract is None:
+        return tools
+    out: list[Tool] = []
+    for tool in tools:
+        if tool.name in ("add_task", "update_task"):
+            schema = json.loads(json.dumps(tool.inputSchema))
+            schema["properties"]["user_asked"] = _USER_ASKED_SCHEMA
+            if tool.name == "add_task":
+                schema["properties"]["source"] = _SOURCE_SCHEMA
+                schema["required"] = [*schema["required"], "source"]
+            note = (
+                " Follows the OmniFocus write contract: agent tasks go to the Inbox with "
+                "no project, tags, due, defer or flag, and note line 1 is the source line."
+            )
+            tool = tool.model_copy(
+                update={"inputSchema": schema, "description": (tool.description or "") + note}
+            )
+        out.append(tool)
+    return out
+
+
 @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Return the list of all MCP tools provided by this server."""
+    return _apply_contract_schema(_all_tools(), load_contract())
+
+
+def _all_tools() -> list[Tool]:
     return _annotate(
         [
             Tool(
@@ -691,6 +736,7 @@ async def _handle_get_task(args: dict[str, Any]) -> list[TextContent]:
 async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
     model = await _load_model()
     project_id: str | None = None
+    project_name: str | None = None
     if args.get("project"):
         needle = str(args["project"]).lower()
         matches = [
@@ -701,15 +747,69 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
         if not matches:
             return _text({"error": f"No active project matching {args['project']!r}"})
         project_id = matches[0].id
-    return await _service_text(
+        project_name = matches[0].name
+    note = str(args.get("note", ""))
+    contract = load_contract()
+    source = str(args.get("source", "")).strip()
+    user_asked = str(args.get("user_asked", "")).strip()
+    if contract is not None:
+        if not source:
+            return _text(
+                {
+                    "error": "source is required by the OmniFocus write contract: "
+                    "'<surface> · <channel or routine>', written as note line 1."
+                }
+            )
+        today = date.today()
+        if not user_asked:
+            rejected = contract.rejected_fields(
+                source=source,
+                project_name=project_name,
+                due=str(args["due"]) if "due" in args else None,
+                defer=str(args["defer"]) if "defer" in args else None,
+                flagged=bool(args.get("flagged", False)),
+                tags=bool(args.get("tag_ids") or args.get("tags")),
+                today=today,
+            )
+            if rejected:
+                return _text({"error": contract.rejection(rejected)})
+        note = WriteContract.stamp_note(note, source, today)
+    result = await _service_text(
         _service().add_task(
             name=str(args.get("name", "")),
             project_id=project_id,
             due=str(args["due"]) if "due" in args else None,
             flagged=bool(args.get("flagged", False)),
-            note=str(args.get("note", "")),
+            note=note,
         )
     )
+    if contract is not None:
+        _log_write(contract, "add_task", source, result, args, user_asked)
+    return result
+
+
+def _log_write(
+    contract: WriteContract,
+    tool: str,
+    source: str | None,
+    result: list[TextContent],
+    args: dict[str, Any],
+    user_asked: str,
+) -> None:
+    """Record a successful write in the contract's append-only log."""
+    data = json.loads(result[0].text)
+    if not isinstance(data, dict) or "error" in data:
+        return
+    skip = {"task_id", "source", "user_asked"}
+    entry: dict[str, Any] = {
+        "tool": tool,
+        "source": source,
+        "task_id": data.get("task_id") or args.get("task_id"),
+        "fields": sorted(key for key in args if key not in skip),
+    }
+    if user_asked:
+        entry["user_asked"] = user_asked
+    contract.log(entry)
 
 
 async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
@@ -727,8 +827,37 @@ async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
+    contract = load_contract()
+    user_asked = str(args.get("user_asked", "")).strip()
+    source: str | None = None
+    note = str(args["note"]) if "note" in args else None
+    if contract is not None:
+        model = await _load_model()
+        task = model.tasks.get(str(args.get("task_id", "")))
+        if task is not None and WriteContract.is_agent_task(task.note):
+            source = task.note.split("\n", 1)[0]
+            if note is not None and not WriteContract.is_agent_task(note):
+                # Keep the source line: it is how the task stays recognisable.
+                note = f"{source}\n{note}" if note else source
+            if task.inbox and not user_asked:
+                project = model.projects.get(str(args.get("project_id", "")))
+                rejected = contract.rejected_fields(
+                    source=source,
+                    project_name=(
+                        (project.name if project else str(args["project_id"]))
+                        if "project_id" in args
+                        else None
+                    ),
+                    due=str(args["due"]) if "due" in args else None,
+                    defer=str(args["defer"]) if "defer" in args else None,
+                    flagged=bool(args.get("flagged", False)),
+                    tags=bool(args.get("tag_ids")),
+                    today=date.today(),
+                )
+                if rejected:
+                    return _text({"error": contract.rejection(rejected, update=True)})
     tag_ids = tuple(str(tag_id) for tag_id in args["tag_ids"]) if "tag_ids" in args else None
-    return await _service_text(
+    result = await _service_text(
         _service().update_task(
             task_id=str(args.get("task_id", "")),
             name=str(args["name"]) if "name" in args else None,
@@ -738,13 +867,16 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
             due=str(args["due"]) if "due" in args else None,
             defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args["flagged"]) if "flagged" in args else None,
-            note=str(args["note"]) if "note" in args else None,
+            note=note,
             estimate=cast(int | str | None, args["estimate"]) if "estimate" in args else None,
             tag_ids=tag_ids,
             clear_tags=bool(args.get("clear_tags", False)),
             dropped=bool(args["dropped"]) if "dropped" in args else None,
         )
     )
+    if contract is not None:
+        _log_write(contract, "update_task", source, result, args, user_asked)
+    return result
 
 
 async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:

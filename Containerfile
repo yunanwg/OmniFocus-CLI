@@ -56,8 +56,10 @@ COPY pyproject.toml README.md ./
 RUN python -m pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir --no-deps -e .
 
-# Writable cache directory for the non-root user
-RUN mkdir -p /app/.of-cache /tmp/of-cache && chown -R appuser /app/.of-cache /tmp/of-cache
+# Writable cache and state directories for the non-root user (.of-state holds
+# the optional OF_WRITE_LOG, kept apart from the disposable cache)
+RUN mkdir -p /app/.of-cache /app/.of-state /tmp/of-cache \
+    && chown -R appuser /app/.of-cache /app/.of-state /tmp/of-cache
 
 USER appuser
 
