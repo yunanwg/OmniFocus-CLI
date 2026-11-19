@@ -105,6 +105,23 @@ podman run --rm -i of mcp
   - `dropped=true` hides the task
 - Response: mutation status plus affected task ID
 
+### Write contract (optional)
+
+Set `OF_WRITE_CONTRACT` to turn on the agent write contract for `add_task` and
+`update_task` (module docstring of `src/omnifocus/write_contract.py` has the
+format). When it is on:
+
+- `add_task` requires `source` (`<surface> · <channel or routine>`) and writes
+  note line 1 as `via <source> · YYYY-MM-DD`.
+- `add_task` rejects `project`, `due`, `defer`, `flagged` and tags unless
+  `user_asked` carries the user's words, or the source matches an exception in
+  `OF_WRITE_CONTRACT` (project and due only).
+- `update_task` applies the same checks to Inbox tasks whose note starts with
+  `via `, using that line as the source, and keeps the line when the note is
+  replaced.
+- `OF_WRITE_LOG` names an append-only JSON Lines log of every `add_task` and
+  `update_task`: time, tool, source, task ID, fields set, and `user_asked`.
+
 Task responses include:
 - `id`
 - `name`

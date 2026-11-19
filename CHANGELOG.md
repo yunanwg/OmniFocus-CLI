@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Optional MCP write contract (`OF_WRITE_CONTRACT`, `OF_WRITE_LOG`): agent tasks
+  carry a required source line, stay in the Inbox without project, tags, dates or
+  flag unless the user asked or a configured source exception applies, and every
+  task write is appended to a JSON Lines log
+
 ### Changed
 
 - Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
