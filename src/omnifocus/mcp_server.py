@@ -74,7 +74,7 @@ import uvicorn
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.types import TextContent, Tool, ToolAnnotations
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -662,6 +662,25 @@ def _all_tools() -> list[Tool]:
 
 
 @server.call_tool()  # type: ignore[untyped-decorator]
+async def call_tool_result(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    """MCP entry point: run ``call_tool`` and mark error payloads with ``isError``.
+
+    Every failure here (unknown tool, OFError, write-contract rejection, not found)
+    is a ``{"error": ...}`` JSON payload. Without ``isError`` a client that only
+    reads the flag would count those as successes.
+    """
+    content = await call_tool(name, arguments)
+    return CallToolResult(content=list(content), isError=_is_error(content))
+
+
+def _is_error(content: list[TextContent]) -> bool:
+    try:
+        data = json.loads(content[0].text)
+    except IndexError, ValueError:
+        return False
+    return isinstance(data, dict) and "error" in data
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Dispatch incoming tool calls to the appropriate handler."""
     handlers: dict[str, Any] = {

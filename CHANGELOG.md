@@ -14,6 +14,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   flag unless the user asked or a configured source exception applies, and every
   task write is appended to a JSON Lines log
 
+### Fixed
+
+- MCP tool errors (unknown tool, `OFError`, not found, write-contract rejections)
+  now come back with `isError: true` instead of as a successful result
+
 ### Changed
 
 - Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
