@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp.types import TextContent
 from starlette.testclient import TestClient
 
 from omnifocus.errors import OFError
@@ -42,6 +43,7 @@ from omnifocus.mcp_server import (
     _handle_update_project,
     _handle_update_tag,
     _handle_update_task,
+    _is_error,
     _parse_optional_date,
     _parse_optional_utc_datetime,
     _project_review_sort_key,
@@ -54,6 +56,7 @@ from omnifocus.mcp_server import (
     _validate_tag_parent_change,
     build_http_app,
     call_tool,
+    call_tool_result,
     list_tools,
     main,
     run_http,
@@ -1594,6 +1597,25 @@ class TestHandleSyncNow:
         data = _parse_response(result)
         assert data["status"] == "synced"
         assert "tasks" in data
+
+
+class TestCallToolResult:
+    @pytest.mark.asyncio
+    async def test_error_payload_sets_is_error(self) -> None:
+        result = await call_tool_result("nonexistent_tool", {})
+        assert result.isError is True
+        assert "error" in json.loads(result.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_success_payload_is_not_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await call_tool_result("list_tasks", {})
+        assert result.isError is False
+
+    def test_is_error_edge_cases(self) -> None:
+        assert _is_error([]) is False
+        assert _is_error([TextContent(type="text", text="not json")]) is False
+        assert _is_error([TextContent(type="text", text="[1]")]) is False
 
 
 class TestCallToolErrors:
