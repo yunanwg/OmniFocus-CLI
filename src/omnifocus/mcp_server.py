@@ -214,7 +214,7 @@ def _annotate(tools: list[Tool]) -> list[Tool]:
 _SOURCE_SCHEMA = {
     "type": "string",
     "description": (
-        "Who is writing: '<surface> · <channel or routine>', e.g. 'Claude Code · rental "
+        "Who is writing: '<surface> · <channel or routine>', e.g. 'Claude Code · inbox "
         "sweep'. Becomes note line 1 as 'via <source> · YYYY-MM-DD'."
     ),
 }
@@ -241,7 +241,8 @@ def _apply_contract_schema(tools: list[Tool], contract: WriteContract | None) ->
                 schema["required"] = [*schema["required"], "source"]
             note = (
                 " Follows the OmniFocus write contract: agent tasks go to the Inbox with "
-                "no project, tags, due, defer or flag, and note line 1 is the source line."
+                "no project, defer or flag (tags and due only where the contract allows), "
+                "and note line 1 is the source line."
             )
             tool = tool.model_copy(
                 update={"inputSchema": schema, "description": (tool.description or "") + note}
@@ -774,6 +775,14 @@ async def _handle_get_task(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
+    if args.get("tag_ids") or args.get("tags"):
+        # add_task has no tag field; say so rather than create the task without them.
+        return _text(
+            {
+                "error": "add_task cannot set tags. Add the task, then call update_task "
+                "with its task_id and tag_ids (from list_tags)."
+            }
+        )
     model = await _load_model()
     project_id: str | None = None
     project_name: str | None = None
@@ -808,7 +817,6 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
                 due=str(args["due"]) if "due" in args else None,
                 defer=str(args["defer"]) if "defer" in args else None,
                 flagged=bool(args.get("flagged", False)),
-                tags=bool(args.get("tag_ids") or args.get("tags")),
                 today=today,
             )
             if rejected:

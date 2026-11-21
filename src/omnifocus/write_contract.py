@@ -9,12 +9,17 @@ be traced back and recognised later.
 It is off unless ``OF_WRITE_CONTRACT`` is set. Its value is a JSON object of
 source exceptions, ``{}`` for none::
 
-    {"rental": {"project": "Errands", "due": "today"},
+    {"*": {"tags": true, "due": "any"},
+     "errands": {"project": "Errands", "due": "today"},
      "groceries": {"project": "Errands", "due": "any"}}
 
 A key matches when it appears in the caller's ``source`` (case-insensitive).
 ``project`` names the one project that source may use; ``due`` is ``today``
-(only a due date of today) or ``any``. Tags, defer and flag have no exception.
+(only a due date of today) or ``any``; ``tags`` (``true``) allows tags.
+The ``*`` key applies to every source, but only to a write that leaves the
+task in the Inbox (no project set): agents may suggest tags and a due date
+there and the user triages. It cannot name a project. A source's own key and
+``*`` add up. Defer and flag have no exception.
 A call that carries ``user_asked`` (the user's own words asking for the field)
 bypasses the field checks; it is logged.
 
@@ -40,6 +45,7 @@ from omnifocus.dateparse import parse_due
 logger = logging.getLogger(__name__)
 
 CONTRACT_ENV = "OF_WRITE_CONTRACT"
+INBOX_KEY = "*"
 LOG_ENV = "OF_WRITE_LOG"
 SOURCE_PREFIX = "via "
 _SEP = " · "
@@ -55,6 +61,7 @@ class SourceException:
 
     project: str | None = None
     due: str | None = None  # "today" or "any"
+    tags: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,7 +100,7 @@ class WriteContract:
         """Return the exception whose key appears in ``source``, or an empty one."""
         lowered = source.lower()
         for key, exc in self.exceptions.items():
-            if key.lower() in lowered:
+            if key != INBOX_KEY and key.lower() in lowered:
                 return exc
         return SourceException()
 
@@ -111,20 +118,25 @@ class WriteContract:
         """Return the fields this source may not set, in a stable order.
 
         Empty ``due``/``defer`` strings clear a date and are always allowed.
+        The ``*`` exception counts only when no project is set.
         """
         exc = self.exception_for(source)
+        inbox = self.exceptions.get(INBOX_KEY) if project_name is None else None
         rejected: list[str] = []
         if project_name is not None and (
             exc.project is None or exc.project.casefold() != project_name.casefold()
         ):
             rejected.append("project")
-        if due and not _due_allowed(exc.due, due, today):
+        if due and not (
+            _due_allowed(exc.due, due, today)
+            or (inbox is not None and _due_allowed(inbox.due, due, today))
+        ):
             rejected.append("due")
         if defer:
             rejected.append("defer")
         if flagged:
             rejected.append("flagged")
-        if tags:
+        if tags and not (exc.tags or (inbox is not None and inbox.tags)):
             rejected.append("tags")
         return rejected
 
@@ -136,9 +148,10 @@ class WriteContract:
         return (
             f"Rejected by the OmniFocus write contract: agents may not {what} "
             f"{', '.join(fields)} on {target}. Agent tasks go to the Inbox with no "
-            "project, tags, due, defer or flag; put any time at the end of the task "
-            "name and leave filing to the user. Pass user_asked with the user's own "
-            "words only when the user explicitly asked for this field."
+            "project, defer or flag; tags and a due date only where the contract "
+            "allows them for this source. Leave filing to the user. Pass user_asked "
+            "with the user's own words only when the user explicitly asked for this "
+            "field."
         )
 
     # -- log -----------------------------------------------------------------
@@ -185,10 +198,16 @@ def load_contract(environ: Mapping[str, str] | None = None) -> WriteContract | N
         raise ContractError(f"{CONTRACT_ENV} must be a JSON object")
     exceptions: dict[str, SourceException] = {}
     for key, value in data.items():
-        if not isinstance(value, dict) or set(value) - {"project", "due"}:
-            raise ContractError(f"{CONTRACT_ENV}[{key!r}] allows only 'project' and 'due'")
+        if not isinstance(value, dict) or set(value) - {"project", "due", "tags"}:
+            raise ContractError(f"{CONTRACT_ENV}[{key!r}] allows only 'project', 'due' and 'tags'")
         if value.get("due") not in (None, "today", "any"):
             raise ContractError(f"{CONTRACT_ENV}[{key!r}].due must be 'today' or 'any'")
-        exceptions[key] = SourceException(project=value.get("project"), due=value.get("due"))
+        if not isinstance(value.get("tags", False), bool):
+            raise ContractError(f"{CONTRACT_ENV}[{key!r}].tags must be true or false")
+        if key == INBOX_KEY and "project" in value:
+            raise ContractError(f"{CONTRACT_ENV}[{INBOX_KEY!r}] is Inbox-only: no 'project'")
+        exceptions[key] = SourceException(
+            project=value.get("project"), due=value.get("due"), tags=value.get("tags", False)
+        )
     log_path = env.get(LOG_ENV)
     return WriteContract(exceptions=exceptions, log_path=Path(log_path) if log_path else None)
