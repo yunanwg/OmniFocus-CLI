@@ -25,6 +25,7 @@ from tests.test_mcp_server import _make_model, _mock_store, _parse_response
 TODAY = date.today()
 EXCEPTIONS = json.dumps(
     {
+        "*": {"tags": True, "due": "any"},
         "rental": {"project": "Engineering", "due": "today"},
         "hellofresh": {"project": "Engineering", "due": "any"},
     }
@@ -55,6 +56,7 @@ class TestLoadContract:
         contract = load_contract({CONTRACT_ENV: EXCEPTIONS})
         assert contract is not None
         assert contract.exceptions["rental"] == SourceException(project="Engineering", due="today")
+        assert contract.exceptions["*"] == SourceException(due="any", tags=True)
         assert contract.log_path is None
 
     @pytest.mark.parametrize(
@@ -63,7 +65,8 @@ class TestLoadContract:
             "not json",
             "[]",
             '{"rental": "x"}',
-            '{"rental": {"tags": true}}',
+            '{"rental": {"tags": "yes"}}',
+            '{"*": {"project": "Engineering"}}',
             '{"rental": {"due": "tomorrow"}}',
         ],
     )
@@ -173,6 +176,54 @@ class TestRejectedFields:
         assert "user_asked" in msg
         upd = WriteContract.rejection(["tags"], update=True)
         assert "change tags on an agent task still in the Inbox" in upd
+
+
+class TestInboxSuggestions:
+    contract = WriteContract(
+        exceptions={
+            "*": SourceException(due="any", tags=True),
+            "rental": SourceException(project="Engineering", due="today"),
+        }
+    )
+    later = (TODAY + timedelta(days=4)).isoformat() + "T17:00"
+
+    def test_any_source_may_suggest_tags_and_due_in_inbox(self) -> None:
+        rejected = self.contract.rejected_fields(
+            source="Duet · daily", due=self.later, tags=True, today=TODAY
+        )
+        assert rejected == []
+
+    def test_still_no_project_defer_flag(self) -> None:
+        rejected = self.contract.rejected_fields(
+            source="Duet · daily",
+            project_name="Engineering",
+            defer="today",
+            flagged=True,
+            today=TODAY,
+        )
+        assert rejected == ["project", "defer", "flagged"]
+
+    def test_inbox_key_does_not_follow_task_into_a_project(self) -> None:
+        rejected = self.contract.rejected_fields(
+            source="rental", project_name="Engineering", due=self.later, tags=True, today=TODAY
+        )
+        assert rejected == ["due", "tags"]
+
+    def test_rental_in_inbox_gets_both(self) -> None:
+        rejected = self.contract.rejected_fields(
+            source="rental", due=self.later, tags=True, today=TODAY
+        )
+        assert rejected == []
+
+    def test_star_key_is_not_a_source_match(self) -> None:
+        assert self.contract.exception_for("a * b") == SourceException()
+
+    def test_source_tags_exception(self) -> None:
+        contract = WriteContract(exceptions={"rental": SourceException(tags=True)})
+        rejected = contract.rejected_fields(
+            source="rental", project_name=None, tags=True, today=TODAY
+        )
+        assert rejected == []
 
 
 class TestLog:
@@ -287,11 +338,10 @@ class TestAddTaskContract:
                 "flagged": True,
                 "project": "Operations",
                 "defer": "today",
-                "tag_ids": ["tag1"],
             }
         )
         assert "OmniFocus write contract" in data["error"]
-        assert "project, due, defer, flagged, tags" in data["error"]
+        assert "project, due, defer, flagged" in data["error"]
         mock.add_task.assert_not_awaited()
         assert _log_lines(contract_on) == []
 
@@ -320,6 +370,19 @@ class TestAddTaskContract:
         assert mock.add_task.await_args.kwargs["parent_task_id"] == "p1"
 
     @pytest.mark.asyncio
+    async def test_inbox_due_suggestion_passes(self, contract_on: Path) -> None:
+        due = (TODAY + timedelta(days=3)).isoformat() + "T17:00"
+        data, mock = await _add({"name": "Follow up with Foncia", "source": "Duet", "due": due})
+        assert data["status"] == "created"
+        assert mock.add_task.await_args.kwargs["parent_task_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_tags_on_add_point_to_update(self, contract_on: Path) -> None:
+        data, mock = await _add({"name": "T", "source": "Duet", "tag_ids": ["tag1"]})
+        assert "update_task" in data["error"]
+        mock.add_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_failed_write_not_logged(self, contract_on: Path) -> None:
         data, _ = await _add({"name": "", "source": "Duet · daily"})
         assert "error" in data
@@ -333,8 +396,16 @@ class TestUpdateTaskContract:
             {"task_id": "t2", "due": "today", "flagged": True}, _agent_model()
         )
         assert "agent task still in the Inbox" in data["error"]
-        assert "due, flagged" in data["error"]
+        assert "change flagged on" in data["error"]
         mock.update_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tags_and_due_suggestion_on_agent_inbox_task(self, contract_on: Path) -> None:
+        data, mock = await _update(
+            {"task_id": "t2", "tag_ids": ["tag1"], "due": "tomorrow"}, _agent_model()
+        )
+        assert data["status"] == "updated"
+        mock.update_task.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_rejects_tags_and_project(self, contract_on: Path) -> None:

@@ -13,11 +13,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   carry a required source line, stay in the Inbox without project, tags, dates or
   flag unless the user asked or a configured source exception applies, and every
   task write is appended to a JSON Lines log
+- Write contract `*` key: lets every source suggest tags and a due date on tasks
+  that stay in the Inbox; exceptions can also allow `tags`
 
 ### Fixed
 
 - MCP tool errors (unknown tool, `OFError`, not found, write-contract rejections)
   now come back with `isError: true` instead of as a successful result
+- `add_task` with `tag_ids` now errors (pointing to `update_task`) instead of
+  creating the task and silently dropping the tags
 
 ### Changed
 

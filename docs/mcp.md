@@ -115,7 +115,9 @@ format). When it is on:
   note line 1 as `via <source> · YYYY-MM-DD`.
 - `add_task` rejects `project`, `due`, `defer`, `flagged` and tags unless
   `user_asked` carries the user's words, or the source matches an exception in
-  `OF_WRITE_CONTRACT` (project and due only).
+  `OF_WRITE_CONTRACT` (project, due and tags). The `*` key applies to every
+  source while the task stays in the Inbox (due and tags only).
+- `add_task` takes no tags: add the task, then set `tag_ids` with `update_task`.
 - `update_task` applies the same checks to Inbox tasks whose note starts with
   `via `, using that line as the source, and keeps the line when the note is
   replaced.
