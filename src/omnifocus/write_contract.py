@@ -10,7 +10,7 @@ It is off unless ``OF_WRITE_CONTRACT`` is set. Its value is a JSON object of
 source exceptions, ``{}`` for none::
 
     {"*": {"tags": true, "due": "any"},
-     "rental": {"project": "Errands", "due": "today"},
+     "errands": {"project": "Errands", "due": "today"},
      "groceries": {"project": "Errands", "due": "any"}}
 
 A key matches when it appears in the caller's ``source`` (case-insensitive).

@@ -214,7 +214,7 @@ def _annotate(tools: list[Tool]) -> list[Tool]:
 _SOURCE_SCHEMA = {
     "type": "string",
     "description": (
-        "Who is writing: '<surface> · <channel or routine>', e.g. 'Claude Code · rental "
+        "Who is writing: '<surface> · <channel or routine>', e.g. 'Claude Code · inbox "
         "sweep'. Becomes note line 1 as 'via <source> · YYYY-MM-DD'."
     ),
 }

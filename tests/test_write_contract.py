@@ -26,8 +26,8 @@ TODAY = date.today()
 EXCEPTIONS = json.dumps(
     {
         "*": {"tags": True, "due": "any"},
-        "rental": {"project": "Engineering", "due": "today"},
-        "hellofresh": {"project": "Engineering", "due": "any"},
+        "errands": {"project": "Engineering", "due": "today"},
+        "groceries": {"project": "Engineering", "due": "any"},
     }
 )
 
@@ -55,7 +55,7 @@ class TestLoadContract:
     def test_parses_exceptions(self) -> None:
         contract = load_contract({CONTRACT_ENV: EXCEPTIONS})
         assert contract is not None
-        assert contract.exceptions["rental"] == SourceException(project="Engineering", due="today")
+        assert contract.exceptions["errands"] == SourceException(project="Engineering", due="today")
         assert contract.exceptions["*"] == SourceException(due="any", tags=True)
         assert contract.log_path is None
 
@@ -64,10 +64,10 @@ class TestLoadContract:
         [
             "not json",
             "[]",
-            '{"rental": "x"}',
-            '{"rental": {"tags": "yes"}}',
+            '{"errands": "x"}',
+            '{"errands": {"tags": "yes"}}',
             '{"*": {"project": "Engineering"}}',
-            '{"rental": {"due": "tomorrow"}}',
+            '{"errands": {"due": "tomorrow"}}',
         ],
     )
     def test_rejects_bad_config(self, raw: str) -> None:
@@ -77,23 +77,23 @@ class TestLoadContract:
 
 class TestSourceLine:
     def test_source_line(self) -> None:
-        line = WriteContract.source_line("via Claude Code · rental sweep ", date(2026, 11, 19))
-        assert line == "via Claude Code · rental sweep · 2026-11-19"
+        line = WriteContract.source_line("via Claude Code · errands sweep ", date(2026, 11, 19))
+        assert line == "via Claude Code · errands sweep · 2026-11-19"
 
     def test_stamp_empty_note(self) -> None:
-        assert WriteContract.stamp_note("", "Duet · daily", date(2026, 11, 19)) == (
-            "via Duet · daily · 2026-11-19"
+        assert WriteContract.stamp_note("", "Agent · daily", date(2026, 11, 19)) == (
+            "via Agent · daily · 2026-11-19"
         )
 
     def test_stamp_prepends(self) -> None:
-        stamped = WriteContract.stamp_note("Call 01 23", "Duet · daily", date(2026, 11, 19))
-        assert stamped == "via Duet · daily · 2026-11-19\nCall 01 23"
+        stamped = WriteContract.stamp_note("Call 01 23", "Agent · daily", date(2026, 11, 19))
+        assert stamped == "via Agent · daily · 2026-11-19\nCall 01 23"
 
     def test_stamp_replaces_existing_line(self) -> None:
         stamped = WriteContract.stamp_note(
-            "via old · x · 2026-01-01\n\nCall", "Duet · daily", date(2026, 11, 19)
+            "via old · x · 2026-01-01\n\nCall", "Agent · daily", date(2026, 11, 19)
         )
-        assert stamped == "via Duet · daily · 2026-11-19\nCall"
+        assert stamped == "via Agent · daily · 2026-11-19\nCall"
 
     def test_is_agent_task(self) -> None:
         assert WriteContract.is_agent_task("via x · y · 2026-11-19\nbody")
@@ -103,17 +103,17 @@ class TestSourceLine:
 class TestRejectedFields:
     contract = WriteContract(
         exceptions={
-            "rental": SourceException(project="Engineering", due="today"),
-            "hellofresh": SourceException(project="Engineering", due="any"),
+            "errands": SourceException(project="Engineering", due="today"),
+            "groceries": SourceException(project="Engineering", due="any"),
         }
     )
 
     def test_plain_inbox_task_passes(self) -> None:
-        assert self.contract.rejected_fields(source="Duet · daily", today=TODAY) == []
+        assert self.contract.rejected_fields(source="Agent · daily", today=TODAY) == []
 
     def test_everything_rejected_without_exception(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="Duet · daily",
+            source="Agent · daily",
             project_name="Engineering",
             due="today",
             defer="today",
@@ -126,10 +126,10 @@ class TestRejectedFields:
     def test_clearing_dates_is_allowed(self) -> None:
         assert self.contract.rejected_fields(source="x", due="", defer="", today=TODAY) == []
 
-    def test_rental_project_and_due_today(self) -> None:
+    def test_errands_project_and_due_today(self) -> None:
         assert (
             self.contract.rejected_fields(
-                source="Claude Code · Rental sweep",
+                source="Claude Code · Errands sweep",
                 project_name="engineering",
                 due="today",
                 today=TODAY,
@@ -137,31 +137,31 @@ class TestRejectedFields:
             == []
         )
 
-    def test_rental_iso_due_today(self) -> None:
+    def test_errands_iso_due_today(self) -> None:
         iso = f"{TODAY.isoformat()}T18:00:00"
-        assert self.contract.rejected_fields(source="rental", due=iso, today=TODAY) == []
+        assert self.contract.rejected_fields(source="errands", due=iso, today=TODAY) == []
 
-    def test_rental_other_project_and_later_due(self) -> None:
+    def test_errands_other_project_and_later_due(self) -> None:
         later = (TODAY + timedelta(days=3)).isoformat()
         rejected = self.contract.rejected_fields(
-            source="rental", project_name="Operations", due=later, today=TODAY
+            source="errands", project_name="Operations", due=later, today=TODAY
         )
         assert rejected == ["project", "due"]
 
-    def test_rental_unparseable_due(self) -> None:
-        assert self.contract.rejected_fields(source="rental", due="??", today=TODAY) == ["due"]
+    def test_errands_unparseable_due(self) -> None:
+        assert self.contract.rejected_fields(source="errands", due="??", today=TODAY) == ["due"]
 
-    def test_rental_still_no_defer_flag_tags(self) -> None:
+    def test_errands_still_no_defer_flag_tags(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="rental", defer="today", flagged=True, tags=True, today=TODAY
+            source="errands", defer="today", flagged=True, tags=True, today=TODAY
         )
         assert rejected == ["defer", "flagged", "tags"]
 
-    def test_hellofresh_any_due(self) -> None:
+    def test_groceries_any_due(self) -> None:
         later = (TODAY + timedelta(days=5)).isoformat()
         assert (
             self.contract.rejected_fields(
-                source="Duet · HelloFresh weekly picks",
+                source="Agent · Groceries weekly order",
                 project_name="Engineering",
                 due=later,
                 today=TODAY,
@@ -182,20 +182,20 @@ class TestInboxSuggestions:
     contract = WriteContract(
         exceptions={
             "*": SourceException(due="any", tags=True),
-            "rental": SourceException(project="Engineering", due="today"),
+            "errands": SourceException(project="Engineering", due="today"),
         }
     )
     later = (TODAY + timedelta(days=4)).isoformat() + "T17:00"
 
     def test_any_source_may_suggest_tags_and_due_in_inbox(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="Duet · daily", due=self.later, tags=True, today=TODAY
+            source="Agent · daily", due=self.later, tags=True, today=TODAY
         )
         assert rejected == []
 
     def test_still_no_project_defer_flag(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="Duet · daily",
+            source="Agent · daily",
             project_name="Engineering",
             defer="today",
             flagged=True,
@@ -205,13 +205,13 @@ class TestInboxSuggestions:
 
     def test_inbox_key_does_not_follow_task_into_a_project(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="rental", project_name="Engineering", due=self.later, tags=True, today=TODAY
+            source="errands", project_name="Engineering", due=self.later, tags=True, today=TODAY
         )
         assert rejected == ["due", "tags"]
 
-    def test_rental_in_inbox_gets_both(self) -> None:
+    def test_errands_in_inbox_gets_both(self) -> None:
         rejected = self.contract.rejected_fields(
-            source="rental", due=self.later, tags=True, today=TODAY
+            source="errands", due=self.later, tags=True, today=TODAY
         )
         assert rejected == []
 
@@ -219,9 +219,9 @@ class TestInboxSuggestions:
         assert self.contract.exception_for("a * b") == SourceException()
 
     def test_source_tags_exception(self) -> None:
-        contract = WriteContract(exceptions={"rental": SourceException(tags=True)})
+        contract = WriteContract(exceptions={"errands": SourceException(tags=True)})
         rejected = contract.rejected_fields(
-            source="rental", project_name=None, tags=True, today=TODAY
+            source="errands", project_name=None, tags=True, today=TODAY
         )
         assert rejected == []
 
@@ -233,11 +233,11 @@ class TestLog:
     def test_appends_json_lines(self, tmp_path: Path) -> None:
         path = tmp_path / "sub" / "log.jsonl"
         contract = WriteContract(log_path=path)
-        contract.log({"tool": "add_task", "source": "Duet · daily"})
+        contract.log({"tool": "add_task", "source": "Agent · daily"})
         contract.log({"tool": "update_task"})
         lines = [json.loads(line) for line in path.read_text().splitlines()]
         assert [line["tool"] for line in lines] == ["add_task", "update_task"]
-        assert lines[0]["source"] == "Duet · daily"
+        assert lines[0]["source"] == "Agent · daily"
         assert "time" in lines[0]
 
     def test_failed_append_does_not_raise(self, tmp_path: Path) -> None:
@@ -284,7 +284,7 @@ def _agent_model(*, inbox: bool = True, note: str | None = None) -> Any:
     model.tasks["t2"] = dataclasses.replace(
         model.tasks["t2"],
         inbox=inbox,
-        note=note if note is not None else "via Duet · daily · 2026-11-19\nCall them",
+        note=note if note is not None else "via Agent · daily · 2026-11-19\nCall them",
     )
     return model
 
@@ -317,13 +317,13 @@ class TestAddTaskContract:
 
     @pytest.mark.asyncio
     async def test_inbox_task_gets_source_line_and_log(self, contract_on: Path) -> None:
-        data, mock = await _add({"name": "Call bank", "note": "01 23", "source": "Duet · daily"})
+        data, mock = await _add({"name": "Call bank", "note": "01 23", "source": "Agent · daily"})
         assert data["status"] == "created"
         note = mock.add_task.await_args.kwargs["note"]
-        assert note == f"via Duet · daily · {TODAY.isoformat()}\n01 23"
+        assert note == f"via Agent · daily · {TODAY.isoformat()}\n01 23"
         [entry] = _log_lines(contract_on)
         assert entry["tool"] == "add_task"
-        assert entry["source"] == "Duet · daily"
+        assert entry["source"] == "Agent · daily"
         assert entry["task_id"] == "new-task"
         assert entry["fields"] == ["name", "note"]
         assert "user_asked" not in entry
@@ -333,7 +333,7 @@ class TestAddTaskContract:
         data, mock = await _add(
             {
                 "name": "T",
-                "source": "Duet · daily",
+                "source": "Agent · daily",
                 "due": "today",
                 "flagged": True,
                 "project": "Operations",
@@ -362,9 +362,9 @@ class TestAddTaskContract:
         assert entry["fields"] == ["due", "flagged", "name"]
 
     @pytest.mark.asyncio
-    async def test_rental_exception(self, contract_on: Path) -> None:
+    async def test_errands_exception(self, contract_on: Path) -> None:
         data, mock = await _add(
-            {"name": "Call agency", "source": "rental sweep", "project": "Engin", "due": "today"}
+            {"name": "Call agency", "source": "errands sweep", "project": "Engin", "due": "today"}
         )
         assert data["status"] == "created"
         assert mock.add_task.await_args.kwargs["parent_task_id"] == "p1"
@@ -372,19 +372,21 @@ class TestAddTaskContract:
     @pytest.mark.asyncio
     async def test_inbox_due_suggestion_passes(self, contract_on: Path) -> None:
         due = (TODAY + timedelta(days=3)).isoformat() + "T17:00"
-        data, mock = await _add({"name": "Follow up with Foncia", "source": "Duet", "due": due})
+        data, mock = await _add(
+            {"name": "Follow up with the landlord", "source": "Agent", "due": due}
+        )
         assert data["status"] == "created"
         assert mock.add_task.await_args.kwargs["parent_task_id"] is None
 
     @pytest.mark.asyncio
     async def test_tags_on_add_point_to_update(self, contract_on: Path) -> None:
-        data, mock = await _add({"name": "T", "source": "Duet", "tag_ids": ["tag1"]})
+        data, mock = await _add({"name": "T", "source": "Agent", "tag_ids": ["tag1"]})
         assert "update_task" in data["error"]
         mock.add_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failed_write_not_logged(self, contract_on: Path) -> None:
-        data, _ = await _add({"name": "", "source": "Duet · daily"})
+        data, _ = await _add({"name": "", "source": "Agent · daily"})
         assert "error" in data
         assert _log_lines(contract_on) == []
 
@@ -424,23 +426,23 @@ class TestUpdateTaskContract:
         data, mock = await _update({"task_id": "t2", "note": "Called, no answer"}, _agent_model())
         assert data["status"] == "updated"
         updated = mock.update_task.await_args.args[0]
-        assert updated.note == "via Duet · daily · 2026-11-19\nCalled, no answer"
+        assert updated.note == "via Agent · daily · 2026-11-19\nCalled, no answer"
         [entry] = _log_lines(contract_on)
-        assert entry["source"] == "via Duet · daily · 2026-11-19"
+        assert entry["source"] == "via Agent · daily · 2026-11-19"
         assert entry["fields"] == ["note"]
         assert entry["task_id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_empty_note_keeps_source_line(self, contract_on: Path) -> None:
         _, mock = await _update({"task_id": "t2", "note": ""}, _agent_model())
-        assert mock.update_task.await_args.args[0].note == "via Duet · daily · 2026-11-19"
+        assert mock.update_task.await_args.args[0].note == "via Agent · daily · 2026-11-19"
 
     @pytest.mark.asyncio
     async def test_note_with_source_line_kept_as_is(self, contract_on: Path) -> None:
         _, mock = await _update(
-            {"task_id": "t2", "note": "via Duet · x · 2026-11-20"}, _agent_model()
+            {"task_id": "t2", "note": "via Agent · x · 2026-11-20"}, _agent_model()
         )
-        assert mock.update_task.await_args.args[0].note == "via Duet · x · 2026-11-20"
+        assert mock.update_task.await_args.args[0].note == "via Agent · x · 2026-11-20"
 
     @pytest.mark.asyncio
     async def test_drop_allowed(self, contract_on: Path) -> None:
@@ -448,8 +450,8 @@ class TestUpdateTaskContract:
         assert data["status"] == "dropped"
 
     @pytest.mark.asyncio
-    async def test_rental_exception_uses_task_source(self, contract_on: Path) -> None:
-        model = _agent_model(note="via Claude Code · rental sweep · 2026-11-19")
+    async def test_errands_exception_uses_task_source(self, contract_on: Path) -> None:
+        model = _agent_model(note="via Claude Code · errands sweep · 2026-11-19")
         data, _ = await _update({"task_id": "t2", "project_id": "p1", "due": "today"}, model)
         assert data["status"] == "updated"
 
