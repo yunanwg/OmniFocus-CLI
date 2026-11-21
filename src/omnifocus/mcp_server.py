@@ -99,7 +99,7 @@ from omnifocus.errors import OFError
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel
 from omnifocus.store import OFocusStore
-from omnifocus.write_contract import WriteContract, load_contract
+from omnifocus.write_contract import ContractError, WriteContract, load_contract
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -254,7 +254,14 @@ def _apply_contract_schema(tools: list[Tool], contract: WriteContract | None) ->
 @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Return the list of all MCP tools provided by this server."""
-    return _apply_contract_schema(_all_tools(), load_contract())
+    try:
+        contract = load_contract()
+    except ContractError:
+        # A bad contract must not take reads down with it: list_tools runs before every
+        # call. Advertise the strict contract; the write handlers still fail closed.
+        logger.exception("invalid write contract; task writes are refused until it is fixed")
+        contract = WriteContract()
+    return _apply_contract_schema(_all_tools(), contract)
 
 
 def _all_tools() -> list[Tool]:
@@ -811,7 +818,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         typed_handler = cast(Callable[[dict[str, Any]], Awaitable[list[TextContent]]], handler)
         return await typed_handler(arguments)
-    except OFError as exc:
+    except (OFError, ContractError) as exc:
         return _text({"error": str(exc)})
 
 

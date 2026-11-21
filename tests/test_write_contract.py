@@ -297,6 +297,22 @@ class TestSchema:
         assert "source" not in tools["add_task"].inputSchema["properties"]
 
     @pytest.mark.asyncio
+    async def test_bad_contract_keeps_reads_and_refuses_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from omnifocus.mcp_server import call_tool
+
+        monkeypatch.setenv(CONTRACT_ENV, '{"*": {"bogus": true}}')
+        tools = {tool.name: tool for tool in await list_tools()}
+        assert "source" in tools["add_task"].inputSchema["properties"]
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await call_tool("add_task", {"name": "T", "source": "Agent"})
+        assert "OF_WRITE_CONTRACT" in _parse_response(result)["error"]
+        mock.add_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_schema_requires_source_when_on(self, contract_on: Path) -> None:
         tools = {tool.name: tool for tool in await list_tools()}
         add = tools["add_task"]
