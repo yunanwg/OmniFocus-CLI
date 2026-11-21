@@ -1002,19 +1002,7 @@ _PERSPECTIVE_XML = f"""<?xml version="1.0" encoding="utf-8"?>
         <key>iconScale</key><real>1.5</real>
         <key>filterRulesAggregation</key><string>all</string>
         <key>filterRules</key>
-        <array>
-          <dict><key>actionAvailability</key><string>available</string></dict>
-          <dict>
-            <key>aggregateType</key><string>any</string>
-            <key>aggregateRules</key>
-            <array>
-              <dict>
-                <key>actionHasAnyOfTags</key><array><string>tagP1</string></array>
-              </dict>
-              <dict><key>actionStatus</key><string>flagged</string></dict>
-            </array>
-          </dict>
-        </array>
+        <string>[{{"actionAvailability":"available"}},{{"aggregateType":"any","aggregateRules":[{{"actionHasAnyOfTags":["tagP1"]}},{{"actionStatus":"flagged"}}]}}]</string>
         <key>showsCompleted</key><false/>
         <key>sidebarVisible</key><true/>
         <key>createdAt</key><date>2026-01-02T03:04:05Z</date>
@@ -1029,6 +1017,10 @@ _PERSPECTIVE_XML = f"""<?xml version="1.0" encoding="utf-8"?>
   </perspective>
   <perspective id="persp2">
     <plist xmlns="" version="1.0"><array><string>not a dict</string></array></plist>
+  </perspective>
+  <perspective id="persp5">
+    <plist version="1.0"><dict><key>name</key><string>Odd</string>
+    <key>filterRules</key><string>not json</string></dict></plist>
   </perspective>
   <perspective id="persp3"><plist xmlns="" version="1.0"/></perspective>
   <perspective id="persp4"/>
@@ -1057,6 +1049,10 @@ class TestPerspectives:
         assert d["icon"] == "AAECAwQ="
         assert d["badInt"] == "x"
         assert d["badReal"] == "y"
+
+    def test_keeps_undecodable_filter_rules_as_text(self) -> None:
+        model = build_model(make_zip(_PERSPECTIVE_XML))
+        assert model.perspectives["persp5"].definition["filterRules"] == "not json"
 
     def test_tolerates_missing_or_odd_plists(self) -> None:
         model = build_model(make_zip(_PERSPECTIVE_XML))

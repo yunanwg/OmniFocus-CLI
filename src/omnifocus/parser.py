@@ -36,6 +36,7 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import io
+import json
 import xml.etree.ElementTree as ET
 import zipfile
 from copy import deepcopy
@@ -383,6 +384,14 @@ def _build_perspective(el: ET.Element) -> Perspective:
         decoded = _plist_value(plist[0])
         if isinstance(decoded, dict):
             definition = decoded
+    # OmniFocus stores the rule tree as a JSON string inside the plist; decode it so
+    # callers (and id resolution) see the rules rather than one opaque string.
+    rules = definition.get("filterRules")
+    if isinstance(rules, str):
+        try:
+            definition["filterRules"] = json.loads(rules)
+        except ValueError:
+            pass
     name = definition.get("name")
     return Perspective(
         id=el.get("id", ""),

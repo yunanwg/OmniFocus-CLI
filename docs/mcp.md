@@ -315,7 +315,7 @@ Tag responses include:
 
 Each record has `id`, `name`, `added`, `modified`, `definition` (the perspective's
 synced plist decoded as JSON: filter rules and their aggregation, grouping, sorting,
-focus, icon; key names are OmniFocus's own) and `references`, mapping every tag,
+focus, icon; key names are OmniFocus's own, and `filterRules`, which OmniFocus stores as a JSON string, is decoded) and `references`, mapping every tag,
 project or folder id found anywhere in `definition` to its type and name. There is no
 perspective write tool: a perspective is an opaque plist the apps own, and a malformed
 one syncs to every device.
