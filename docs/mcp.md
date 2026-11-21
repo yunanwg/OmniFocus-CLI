@@ -305,6 +305,21 @@ Tag responses include:
 - `parent_name`
 - `child_tag_ids`
 
+### Perspectives
+
+#### `list_perspectives`
+
+- Required inputs: none
+- Optional inputs: `name` (case-insensitive substring)
+- Response: perspective records sorted by name, read-only
+
+Each record has `id`, `name`, `added`, `modified`, `definition` (the perspective's
+synced plist decoded as JSON: filter rules and their aggregation, grouping, sorting,
+focus, icon; key names are OmniFocus's own) and `references`, mapping every tag,
+project or folder id found anywhere in `definition` to its type and name. There is no
+perspective write tool: a perspective is an opaque plist the apps own, and a malformed
+one syncs to every device.
+
 ### Sync
 
 #### `sync_now`
@@ -322,6 +337,6 @@ Tag responses include:
 
 ## Not Yet Implemented
 
-- perspectives
+- perspective writes
 - statistics tools
 - dedicated inbox MCP tools

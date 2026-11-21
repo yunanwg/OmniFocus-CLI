@@ -18,6 +18,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,30 @@ class Task:
     planned_date_alarm_policy: str | None = None
 
 
+@dataclass(frozen=True)
+class Perspective:
+    """A perspective record synced with the database (custom or built-in state).
+
+    OmniFocus stores each perspective as an XML element wrapping an Apple plist.
+    The plist keys are OmniFocus internals (filter rules, aggregation, grouping,
+    sorting, icon, sidebar state), so the parser keeps the whole plist as JSON-safe
+    data in ``definition`` rather than guessing a schema.
+
+    Attributes:
+        id: Opaque OmniFocus identifier string.
+        name: Display name (the plist ``name`` key; empty when absent).
+        definition: The decoded plist (dates as ISO strings, data as base64).
+        added: UTC datetime when the perspective was created, if recorded.
+        modified: UTC datetime of the last modification, if recorded.
+    """
+
+    id: str
+    name: str
+    definition: dict[str, Any] = field(default_factory=dict)
+    added: datetime | None = None
+    modified: datetime | None = None
+
+
 @dataclass
 class OFModel:
     """The fully-parsed, in-memory representation of an OmniFocus database.
@@ -189,6 +214,7 @@ class OFModel:
         projects: All projects, keyed by id.
         tasks: All non-project tasks, keyed by id.
         tags: All tags/contexts, keyed by id.
+        perspectives: All perspective records, keyed by id.
         parsed_at: UTC datetime when this model was built from the bundle.
     """
 
@@ -196,6 +222,7 @@ class OFModel:
     projects: dict[str, Project] = field(default_factory=dict)
     tasks: dict[str, Task] = field(default_factory=dict)
     tags: dict[str, Tag] = field(default_factory=dict)
+    perspectives: dict[str, Perspective] = field(default_factory=dict)
     parsed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property

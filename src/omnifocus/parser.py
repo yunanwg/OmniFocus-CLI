@@ -40,9 +40,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
+from typing import Any
 
 from omnifocus.errors import OFParseError
-from omnifocus.models import Folder, OFModel, Project, Tag, Task
+from omnifocus.models import Folder, OFModel, Perspective, Project, Tag, Task
 
 # OmniFocus v2 XML namespace
 _NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
@@ -229,8 +230,8 @@ def _materialize_reference_snapshot(elem: ET.Element) -> ET.Element:
 def _index_elements(root: ET.Element, index: _RawIndex) -> None:
     """Index all direct children of *root* into *index* using upsert/delete semantics.
 
-    Elements without an ``id`` attribute are silently ignored (e.g. perspective
-    and setting elements that have no id).
+    Elements without an ``id`` attribute are silently ignored (e.g. setting
+    elements that have no id).
 
     Args:
         root: An ``<omnifocus>`` element from baseline or a transaction ZIP.
@@ -323,6 +324,72 @@ def _build_tag(el: ET.Element) -> Tag | None:
         modified=_parse_dt_utc(_text(el, "modified")),
         note=_text(el, "note") or "",
         hidden=_parse_dt_utc(_text(el, "hidden")),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Perspective builder
+# ---------------------------------------------------------------------------
+
+
+def _localname(tag: str) -> str:
+    """Return *tag* without its ``{namespace}`` prefix."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _plist_value(el: ET.Element) -> Any:
+    """Decode one Apple plist value element into JSON-safe Python data.
+
+    Namespace-agnostic: inside ``contents.xml`` the plist inherits the
+    OmniFocus default namespace. Dates stay ISO strings and ``<data>`` stays
+    base64 text, so the result serialises as JSON unchanged.
+    """
+    kind = _localname(el.tag)
+    text = (el.text or "").strip()
+    if kind == "dict":
+        out: dict[str, Any] = {}
+        children = list(el)
+        for key_el, value_el in zip(children[::2], children[1::2], strict=False):
+            out[(key_el.text or "").strip()] = _plist_value(value_el)
+        return out
+    if kind == "array":
+        return [_plist_value(child) for child in el]
+    if kind == "true":
+        return True
+    if kind == "false":
+        return False
+    if kind == "integer":
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    if kind == "real":
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    if kind == "data":
+        return "".join(text.split())
+    return text
+
+
+def _build_perspective(el: ET.Element) -> Perspective:
+    """Convert a raw ``<perspective>`` XML element into a :class:`Perspective`."""
+    definition: dict[str, Any] = {}
+    plist = el.find(_tag("plist"))
+    if plist is None:
+        plist = el.find("plist")
+    if plist is not None and len(plist):
+        decoded = _plist_value(plist[0])
+        if isinstance(decoded, dict):
+            definition = decoded
+    name = definition.get("name")
+    return Perspective(
+        id=el.get("id", ""),
+        name=name if isinstance(name, str) else "",
+        definition=definition,
+        added=_parse_dt_utc(_text(el, "added")),
+        modified=_parse_dt_utc(_text(el, "modified")),
     )
 
 
@@ -581,9 +648,13 @@ def build_model(
         if task is not None:
             tasks[task.id] = task
 
+    # Step 9: perspectives (filter rules, grouping, sorting live in their plist)
+    perspectives = {pid: _build_perspective(el) for pid, el in index.get("perspective", {}).items()}
+
     return OFModel(
         folders=folders,
         projects=projects,
         tasks=tasks,
         tags=tags,
+        perspectives=perspectives,
     )

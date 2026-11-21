@@ -26,6 +26,7 @@ Tools
 ``drop_folder``     Drop a folder.
 ``list_tags``       List all tags.
 ``get_tag``         Retrieve a single tag by id.
+``list_perspectives`` Read perspective definitions (filter rules, grouping, sorting).
 ``add_tag``         Create a new tag.
 ``update_tag``      Update a tag.
 ``drop_tag``        Drop a tag.
@@ -179,6 +180,7 @@ _READ_ONLY_TOOLS = frozenset(
         "get_folder_tree",
         "list_tags",
         "get_tag",
+        "list_perspectives",
         "sync_now",
     }
 )
@@ -611,6 +613,24 @@ def _all_tools() -> list[Tool]:
                 },
             ),
             Tool(
+                name="list_perspectives",
+                description=(
+                    "Read OmniFocus perspective definitions as synced with the database: "
+                    "name plus the decoded plist (filter rules and their aggregation, "
+                    "grouping, sorting, focus, icon). Tags, projects and folders the "
+                    "definition names by id are resolved under 'references'. Read-only."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Case-insensitive name substring filter",
+                        }
+                    },
+                },
+            ),
+            Tool(
                 name="add_tag",
                 description="Create a new OmniFocus tag.",
                 inputSchema={
@@ -705,6 +725,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "drop_folder": _handle_drop_folder,
         "list_tags": _handle_list_tags,
         "get_tag": _handle_get_tag,
+        "list_perspectives": _handle_list_perspectives,
         "add_tag": _handle_add_tag,
         "update_tag": _handle_update_tag,
         "drop_tag": _handle_drop_tag,
@@ -1033,6 +1054,13 @@ async def _handle_list_tags(args: dict[str, Any]) -> list[TextContent]:
 
 async def _handle_get_tag(args: dict[str, Any]) -> list[TextContent]:
     return await _service_text(_service().get_tag(tag_id=str(args.get("tag_id", ""))))
+
+
+async def _handle_list_perspectives(args: dict[str, Any]) -> list[TextContent]:
+    name = args.get("name")
+    return await _service_text(
+        _service().list_perspectives(name=str(name) if name is not None else None)
+    )
 
 
 async def _handle_add_tag(args: dict[str, Any]) -> list[TextContent]:

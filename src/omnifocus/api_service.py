@@ -17,6 +17,7 @@ from omnifocus.api_common import (
     matching_tag_ids,
     parse_optional_date,
     parse_optional_utc_datetime,
+    perspective_summary,
     project_review_sort_key,
     project_summary,
     tag_summary,
@@ -475,6 +476,16 @@ class StoreBackedApiService:
         model = await self._load_model(False)
         tag = self._require_tag(model, tag_id)
         return tag_summary(tag, model)
+
+    async def list_perspectives(self, *, name: str | None = None) -> list[dict[str, Any]]:
+        """List perspective definitions, optionally filtered by a name substring."""
+        model = await self._load_model(False)
+        needle = (name or "").casefold()
+        perspectives = [
+            item for item in model.perspectives.values() if needle in item.name.casefold()
+        ]
+        perspectives.sort(key=lambda item: (item.name.casefold(), item.id))
+        return [perspective_summary(item, model) for item in perspectives]
 
     async def add_tag(
         self,
