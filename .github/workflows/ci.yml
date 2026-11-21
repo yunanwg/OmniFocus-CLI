@@ -168,7 +168,7 @@ jobs:
           status=$?
           set -e
           test "$status" -ne 0
-          printf '%s\n' "$output" | grep -F "does not accept additional arguments"
+          printf '%s\n' "$output" | grep -F "takes no positional arguments"
 
       - name: Smoke test default MCP launcher
         run: |
