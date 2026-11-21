@@ -61,17 +61,27 @@ def matching_tag_ids(
 
 
 def task_summary(task: Task, model: OFModel) -> dict[str, Any]:
-    """Return a concise dict representation of a task."""
+    """Return a concise dict representation of a task.
+
+    ``start`` is OmniFocus's internal name for the defer date; ``defer`` is returned as an explicit
+    alias so callers do not have to remember the historical naming mismatch. ``project_status`` and
+    ``project_folder_name`` are included so review agents can filter without a separate lookup.
+    """
     project = model.projects.get(task.project_id or "")
+    folder = model.folders.get(project.folder_id or "") if project else None
+    start_iso = task.start.isoformat() if task.start else None
     return {
         "id": task.id,
         "name": task.name,
         "project": project.name if project else None,
         "project_id": task.project_id,
+        "project_status": project.status if project else None,
+        "project_folder_name": folder.name if folder else None,
         "inbox": task.inbox,
         "flagged": task.flagged,
         "due": task.due.isoformat() if task.due else None,
-        "start": task.start.isoformat() if task.start else None,
+        "start": start_iso,
+        "defer": start_iso,
         "completed": task.completed.isoformat() if task.completed else None,
         "note": task.note,
         "tag_ids": list(task.tag_ids),

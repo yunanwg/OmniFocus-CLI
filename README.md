@@ -61,13 +61,17 @@ mkdir -p .of-cache
 podman run --rm \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
-  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  -e OF_WEBDAV_URL \
+  -e OF_WEBDAV_USER \
+  -e OF_WEBDAV_PASS \
   of sync
 
 podman run --rm \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
-  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  -e OF_WEBDAV_URL \
+  -e OF_WEBDAV_USER \
+  -e OF_WEBDAV_PASS \
   of tasks --inbox
 ```
 
@@ -77,7 +81,9 @@ podman run --rm \
 podman run --rm -i \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
-  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  -e OF_WEBDAV_URL \
+  -e OF_WEBDAV_USER \
+  -e OF_WEBDAV_PASS \
   of
 ```
 
@@ -103,7 +109,7 @@ podman run --rm --pull=always of --version
 ## Documentation
 
 - [CLI reference](docs/cli.md) for the exact `of` command surface
-- [HTTPS API reference](docs/http.md) for operator guidance around the `/v1` API
+- [HTTPS API reference](docs/http.md) for operator guidance, including a copy-paste local TLS and Hermes MCP setup
 - [ASVS 5.0 security mapping](docs/security/asvs-5.0.md) for implemented controls and known gaps
 - [MCP reference](docs/mcp.md) for the stdio tool catalog and input contracts
 - [Container and runtime notes](docs/container.md) for image behavior and deployment patterns
@@ -191,7 +197,11 @@ image does not mask a newer published release.
         "-e",
         "OF_CACHE_DIR=/cache",
         "-e",
-        "OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/",
+        "OF_WEBDAV_URL",
+        "-e",
+        "OF_WEBDAV_USER",
+        "-e",
+        "OF_WEBDAV_PASS",
         "of:latest"
       ]
     }
@@ -199,8 +209,8 @@ image does not mask a newer published release.
 }
 ```
 
-If you prefer to keep credentials out of the URL, pass `OF_WEBDAV_USER`,
-`OF_WEBDAV_PASS`, and optionally `OF_ENCRYPTION_PASSPHRASE` as separate variables.
+Set the variables in your MCP host's explicit environment configuration; do not put credential
+values in command arguments or embed them in `OF_WEBDAV_URL`.
 
 ### MCP deployment notes
 
@@ -212,11 +222,15 @@ If you prefer to keep credentials out of the URL, pass `OF_WEBDAV_USER`,
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `OF_WEBDAV_URL` | Yes | WebDAV bundle URL. Credentials may be embedded as `https://user:pass@host/path/`. |
+| `OF_WEBDAV_URL` | Yes | WebDAV bundle URL. Embedded credentials remain supported for compatibility but are not recommended. |
 | `OF_WEBDAV_USER` | No | Explicit WebDAV username. Overrides URL-embedded credentials. |
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password. Overrides URL-embedded credentials. |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase. Defaults to the WebDAV password. |
 | `OF_CACHE_DIR` | No | Cache directory. Defaults to a repo-local `.of-cache/` when detectable, otherwise `/tmp/of-cache`. |
+
+Every sensitive variable also accepts a mutually exclusive `_FILE` form (for example,
+`OF_WEBDAV_PASS_FILE`). The file is read as UTF-8 and is suitable for a container secret mount.
+Prefer it to an environment variable or URL-embedded credentials.
 
 ## Distribution
 

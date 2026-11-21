@@ -31,6 +31,7 @@ from omnifocus.filters import VALID_TASK_STATUS, filter_tasks
 from omnifocus.formatting import build_folder_tree_data
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
+from omnifocus.recurrence import RepetitionFields, build_repetition
 from omnifocus.review import compute_project_review_state, mark_project_reviewed
 from omnifocus.store import OFocusStore
 
@@ -67,7 +68,13 @@ class StoreBackedApiService:
         today: bool = False,
         flagged: bool = False,
         due: bool = False,
+        no_due: bool = False,
+        no_defer: bool = False,
+        available: bool = False,
+        overdue: bool = False,
+        has_project: bool = False,
         project: str | None = None,
+        project_status: str = "all",
         tag: str | None = None,
         tag_id: str | None = None,
         status: str = "active",
@@ -83,9 +90,20 @@ class StoreBackedApiService:
         uses an exact stable identifier. `status` selects the base set
         (active/completed/dropped/all); `completed_on` / `completed_since` accept an ISO date or
         `today`/`yesterday` and report on finished work (they imply `status=completed`).
+        `project_status` filters by the containing project's status (`active|inactive|all`);
+        `active` also keeps inbox/loose tasks that have no project. The GTD review filters
+        (`no_due`, `no_defer`, `available`, `overdue`, `has_project`) are opt-in; `available` and
+        `overdue` compare against the current local time and treat the defer (start) date as the
+        availability gate.
         """
         if status not in VALID_TASK_STATUS:
             raise OFHTTPError("Invalid status filter", status_code=422, code="validation_error")
+        if project_status not in {"active", "inactive", "all"}:
+            raise OFHTTPError(
+                "project_status must be active, inactive, or all",
+                status_code=422,
+                code="validation_error",
+            )
         model = await self._load_model(False)
         if tag_id:
             self._require_tag(model, tag_id)
@@ -106,6 +124,21 @@ class StoreBackedApiService:
             )
         except ValueError as exc:
             raise OFHTTPError(str(exc), status_code=422, code="validation_error") from exc
+        now = datetime.now()
+        if no_due:
+            tasks = [task for task in tasks if task.due is None]
+        if no_defer:
+            tasks = [task for task in tasks if task.start is None]
+        if available:
+            tasks = [task for task in tasks if task.start is None or task.start <= now]
+        if overdue:
+            tasks = [task for task in tasks if task.due is not None and task.due < now]
+        if has_project:
+            tasks = [task for task in tasks if task.project_id is not None]
+        if project_status != "all":
+            tasks = [
+                task for task in tasks if self._project_status_matches(model, task, project_status)
+            ]
         return [task_summary(task, model) for task in tasks[:limit]]
 
     async def search_tasks(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -128,35 +161,73 @@ class StoreBackedApiService:
         *,
         name: str,
         project_id: str | None = None,
+        parent_task_id: str | None = None,
+        validation_model: OFModel | None = None,
         due: str | None = None,
+        defer: str | None = None,
         flagged: bool = False,
         note: str = "",
+        repeat_every: str | None = None,
+        repeat_from: str | None = None,
+        repetition_rule: str | None = None,
+        repetition_method: str | None = None,
     ) -> dict[str, str]:
-        """Create a task, optionally resolving it into an active project container."""
+        """Create a task in the inbox, a project, or under a parent task.
+
+        Tasks may be created in any project that is not ``done`` or ``dropped``; an explicit
+        ``project_id`` is honoured even when the project is ``inactive`` (on hold). Pass
+        ``parent_task_id`` to nest the task under an existing task. Recurrence is set via the
+        ``repeat_every``/``repeat_from`` shorthand or the raw ``repetition_rule``/method tokens.
+        """
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
+        if project_id is not None and parent_task_id is not None:
+            raise OFHTTPError(
+                "project_id and parent_task_id cannot be combined",
+                status_code=409,
+                code="conflict",
+            )
         due_dt = self._parse_due_like(due, field="due")
-        parent_task_id: str | None = None
+        start_dt = self._parse_due_like(defer, field="defer")
+        repetition = build_repetition(
+            repeat_every=repeat_every,
+            repeat_from=repeat_from,
+            repetition_rule=repetition_rule,
+            repetition_method=repetition_method,
+        )
+        resolved_parent: str | None = None
         inbox = True
         if project_id is not None:
-            model = await self._load_model(False)
+            model = validation_model or await self._load_model(False)
             project = self._require_project(model, project_id)
-            if project.status != "active":
+            if project.status in {"done", "dropped"}:
                 raise OFHTTPError(
-                    f"Project is not active: {project_id}",
+                    f"Cannot move task into a {project.status} project: {project_id}",
                     status_code=409,
                     code="conflict",
                 )
-            parent_task_id = project.id
+            resolved_parent = project.id
+            inbox = False
+        elif parent_task_id is not None:
+            model = validation_model or await self._load_model(False)
+            self._require_parent(model, parent_task_id)
+            resolved_parent = parent_task_id
             inbox = False
         async with self._store_factory() as store:
             return await store.add_task(
                 name=name,
-                parent_task_id=parent_task_id,
+                parent_task_id=resolved_parent,
                 inbox=inbox,
                 flagged=flagged,
                 due_dt=due_dt,
+                start_dt=start_dt,
                 note=note,
+                repetition_rule=repetition.repetition_rule if repetition else None,
+                repetition_method=repetition.repetition_method if repetition else None,
+                repetition_schedule_type=(
+                    repetition.repetition_schedule_type if repetition else None
+                ),
+                repetition_anchor_date=(repetition.repetition_anchor_date if repetition else None),
             )
 
     async def update_task(
@@ -175,11 +246,16 @@ class StoreBackedApiService:
         tag_ids: tuple[str, ...] | None = None,
         clear_tags: bool = False,
         dropped: bool | None = None,
+        repeat_every: str | None = None,
+        repeat_from: str | None = None,
+        repetition_rule: str | None = None,
+        repetition_method: str | None = None,
     ) -> dict[str, str]:
         """Update a task by stable ID using the shared mutation semantics.
 
         The method validates conflicting move operations, tag replacement versus clearing,
-        due/defer parsing, estimate coercion, and dropped/hidden transitions before persistence.
+        due/defer parsing, estimate coercion, dropped/hidden transitions, and recurrence
+        (``repeat_every``/``repeat_from`` or raw ``repetition_rule``) before persistence.
         """
         model = await self._load_model(False)
         task = self._require_task(model, task_id)
@@ -198,6 +274,12 @@ class StoreBackedApiService:
             tag_ids=tag_ids,
             clear_tags=clear_tags,
             dropped=dropped,
+            repetition=build_repetition(
+                repeat_every=repeat_every,
+                repeat_from=repeat_from,
+                repetition_rule=repetition_rule,
+                repetition_method=repetition_method,
+            ),
         )
         async with self._store_factory() as store:
             if dropped is True:
@@ -256,6 +338,7 @@ class StoreBackedApiService:
         *,
         name: str,
         folder_id: str | None = None,
+        validation_model: OFModel | None = None,
         due: str | None = None,
         defer: str | None = None,
         flagged: bool = False,
@@ -272,7 +355,7 @@ class StoreBackedApiService:
                 code="validation_error",
             )
         if folder_id is not None:
-            model = await self._load_model(False)
+            model = validation_model or await self._load_model(False)
             self._require_folder(model, folder_id)
         async with self._store_factory() as store:
             return await store.add_project(
@@ -588,6 +671,25 @@ class StoreBackedApiService:
             raise OFHTTPError(f"Tag not found: {tag_id}", status_code=404, code="not_found")
         return tag
 
+    def _require_parent(self, model: OFModel, parent_id: str) -> None:
+        """Validate that ``parent_id`` refers to an existing task or project."""
+        if parent_id not in model.tasks and parent_id not in model.projects:
+            raise OFHTTPError(
+                f"Parent task not found: {parent_id}", status_code=404, code="not_found"
+            )
+
+    @staticmethod
+    def _project_status_matches(model: OFModel, task: Task, project_status: str) -> bool:
+        """Return whether a task belongs to a project with the requested status.
+
+        For ``active`` filtering, inbox/loose tasks with no containing project are kept so the
+        GTD "active + inbox" review view does not silently drop the inbox.
+        """
+        project = model.projects.get(task.project_id or "")
+        if project is None:
+            return project_status == "active"
+        return project.status == project_status
+
     def _parse_due_like(self, value: str | None, *, field: str) -> datetime | None:
         """Parse ISO or CLI-style natural date inputs."""
         if value is None or value == "":
@@ -621,6 +723,7 @@ class StoreBackedApiService:
         tag_ids: tuple[str, ...] | None,
         clear_tags: bool,
         dropped: bool | None,
+        repetition: RepetitionFields | None,
     ) -> Task:
         """Return a validated updated task object."""
         if project_id and clear_project:
@@ -654,9 +757,9 @@ class StoreBackedApiService:
 
         if project_id:
             project = self._require_project(model, project_id)
-            if project.status != "active":
+            if project.status in {"done", "dropped"}:
                 raise OFHTTPError(
-                    f"Project is not active: {project_id}",
+                    f"Cannot move task into a {project.status} project: {project_id}",
                     status_code=409,
                     code="conflict",
                 )
@@ -702,6 +805,21 @@ class StoreBackedApiService:
         elif dropped is False:
             hidden_value = None
 
+        repetition_rule: str | None
+        repetition_method: str | None
+        repetition_schedule_type: str | None
+        repetition_anchor_date: str | None
+        if repetition is not None:
+            repetition_rule = repetition.repetition_rule
+            repetition_method = repetition.repetition_method
+            repetition_schedule_type = repetition.repetition_schedule_type
+            repetition_anchor_date = repetition.repetition_anchor_date
+        else:
+            repetition_rule = task.repetition_rule
+            repetition_method = task.repetition_method
+            repetition_schedule_type = task.repetition_schedule_type
+            repetition_anchor_date = task.repetition_anchor_date
+
         return dataclasses.replace(
             task,
             name=name if name is not None else task.name,
@@ -715,6 +833,10 @@ class StoreBackedApiService:
             estimated_minutes=estimate_value,
             tag_ids=resolved_tag_ids,
             hidden=hidden_value,
+            repetition_rule=repetition_rule,
+            repetition_method=repetition_method,
+            repetition_schedule_type=repetition_schedule_type,
+            repetition_anchor_date=repetition_anchor_date,
             modified=datetime.now(UTC),
         )
 

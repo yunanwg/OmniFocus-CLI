@@ -99,7 +99,7 @@ from omnifocus.errors import OFError
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel
 from omnifocus.store import OFocusStore
-from omnifocus.write_contract import WriteContract, load_contract
+from omnifocus.write_contract import ContractError, WriteContract, load_contract
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -254,7 +254,14 @@ def _apply_contract_schema(tools: list[Tool], contract: WriteContract | None) ->
 @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Return the list of all MCP tools provided by this server."""
-    return _apply_contract_schema(_all_tools(), load_contract())
+    try:
+        contract = load_contract()
+    except ContractError:
+        # A bad contract must not take reads down with it: list_tools runs before every
+        # call. Advertise the strict contract; the write handlers still fail closed.
+        logger.exception("invalid write contract; task writes are refused until it is fixed")
+        contract = WriteContract()
+    return _apply_contract_schema(_all_tools(), contract)
 
 
 def _all_tools() -> list[Tool]:
@@ -294,7 +301,26 @@ def _all_tools() -> list[Tool]:
                         "today": {"type": "boolean", "description": "Due today or overdue"},
                         "flagged": {"type": "boolean", "description": "Flagged tasks only"},
                         "due": {"type": "boolean", "description": "Tasks with any due date"},
+                        "no_due": {"type": "boolean", "description": "Tasks with no due date"},
+                        "no_defer": {"type": "boolean", "description": "Tasks with no defer date"},
+                        "available": {
+                            "type": "boolean",
+                            "description": "Available now (no defer date or defer date reached)",
+                        },
+                        "overdue": {"type": "boolean", "description": "Due date in the past"},
+                        "has_project": {
+                            "type": "boolean",
+                            "description": "Tasks assigned to a project (excludes inbox)",
+                        },
                         "project": {"type": "string", "description": "Project name substring"},
+                        "project_status": {
+                            "type": "string",
+                            "enum": ["active", "inactive", "all"],
+                            "description": (
+                                "Filter by containing project status (default all). "
+                                "'active' also keeps inbox/loose tasks."
+                            ),
+                        },
                         "tag": {"type": "string", "description": "Tag name substring"},
                         "tag_id": {"type": "string", "description": "Exact tag ID"},
                         "folder": {
@@ -339,12 +365,44 @@ def _all_tools() -> list[Tool]:
                     "properties": {
                         "name": {"type": "string", "description": "Task name"},
                         "project": {"type": "string", "description": "Project name (substring)"},
+                        "parent_task_id": {
+                            "type": "string",
+                            "description": "Nest under this task/project ID (excludes project)",
+                        },
                         "due": {
                             "type": "string",
                             "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
                         },
+                        "defer": {
+                            "type": "string",
+                            "description": (
+                                "Defer date ISO 8601 or natural (today/tomorrow/mon-sun)"
+                            ),
+                        },
                         "flagged": {"type": "boolean"},
                         "note": {"type": "string"},
+                        "repeat_every": {
+                            "type": "string",
+                            "description": "Recurrence interval, e.g. '30d', '6w', '3m', '1y'",
+                        },
+                        "repeat_from": {
+                            "type": "string",
+                            "enum": [
+                                "fixed",
+                                "completion",
+                                "start-after-completion",
+                                "due-after-completion",
+                            ],
+                            "description": "Recurrence anchor (default fixed calendar schedule)",
+                        },
+                        "repetition_rule": {
+                            "type": "string",
+                            "description": "Raw OmniFocus RRULE, overrides repeat_every",
+                        },
+                        "repetition_method": {
+                            "type": "string",
+                            "description": "Raw OmniFocus repetition-method override",
+                        },
                     },
                     "required": ["name"],
                 },
@@ -401,6 +459,28 @@ def _all_tools() -> list[Tool]:
                         },
                         "clear_tags": {"type": "boolean"},
                         "dropped": {"type": "boolean"},
+                        "repeat_every": {
+                            "type": "string",
+                            "description": "Recurrence interval, e.g. '30d', '6w', '3m', '1y'",
+                        },
+                        "repeat_from": {
+                            "type": "string",
+                            "enum": [
+                                "fixed",
+                                "completion",
+                                "start-after-completion",
+                                "due-after-completion",
+                            ],
+                            "description": "Recurrence anchor (default fixed calendar schedule)",
+                        },
+                        "repetition_rule": {
+                            "type": "string",
+                            "description": "Raw OmniFocus RRULE, overrides repeat_every",
+                        },
+                        "repetition_method": {
+                            "type": "string",
+                            "description": "Raw OmniFocus repetition-method override",
+                        },
                     },
                     "required": ["task_id"],
                 },
@@ -738,7 +818,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         typed_handler = cast(Callable[[dict[str, Any]], Awaitable[list[TextContent]]], handler)
         return await typed_handler(arguments)
-    except OFError as exc:
+    except (OFError, ContractError) as exc:
         return _text({"error": str(exc)})
 
 
@@ -752,7 +832,13 @@ async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
             today=bool(args.get("today")),
             flagged=bool(args.get("flagged")),
             due=bool(args.get("due")),
+            no_due=bool(args.get("no_due")),
+            no_defer=bool(args.get("no_defer")),
+            available=bool(args.get("available")),
+            overdue=bool(args.get("overdue")),
+            has_project=bool(args.get("has_project")),
             project=args.get("project"),
+            project_status=str(args.get("project_status", "all")),
             tag=args.get("tag"),
             tag_id=args.get("tag_id"),
             folder=args.get("folder"),
@@ -791,10 +877,10 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
         matches = [
             project
             for project in model.projects.values()
-            if needle in project.name.lower() and project.status == "active"
+            if needle in project.name.lower() and project.status not in {"done", "dropped"}
         ]
         if not matches:
-            return _text({"error": f"No active project matching {args['project']!r}"})
+            return _text({"error": f"No project matching {args['project']!r}"})
         project_id = matches[0].id
         project_name = matches[0].name
     note = str(args.get("note", ""))
@@ -817,6 +903,8 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
                 due=str(args["due"]) if "due" in args else None,
                 defer=str(args["defer"]) if "defer" in args else None,
                 flagged=bool(args.get("flagged", False)),
+                parent=bool(args.get("parent_task_id")),
+                repeat=_sets_repeat(args),
                 today=today,
             )
             if rejected:
@@ -826,14 +914,29 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
         _service().add_task(
             name=str(args.get("name", "")),
             project_id=project_id,
+            parent_task_id=str(args["parent_task_id"]) if "parent_task_id" in args else None,
+            validation_model=model,
             due=str(args["due"]) if "due" in args else None,
+            defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
             note=note,
+            **_repeat_kwargs(args),
         )
     )
     if contract is not None:
         _log_write(contract, "add_task", source, result, args, user_asked)
     return result
+
+
+_REPEAT_KEYS = ("repeat_every", "repeat_from", "repetition_rule", "repetition_method")
+
+
+def _sets_repeat(args: dict[str, Any]) -> bool:
+    return any(args.get(key) for key in _REPEAT_KEYS)
+
+
+def _repeat_kwargs(args: dict[str, Any]) -> dict[str, str | None]:
+    return {key: str(args[key]) if key in args else None for key in _REPEAT_KEYS}
 
 
 def _log_write(
@@ -900,6 +1003,7 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
                     defer=str(args["defer"]) if "defer" in args else None,
                     flagged=bool(args.get("flagged", False)),
                     tags=bool(args.get("tag_ids")),
+                    repeat=_sets_repeat(args),
                     today=date.today(),
                 )
                 if rejected:
@@ -920,6 +1024,7 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
             tag_ids=tag_ids,
             clear_tags=bool(args.get("clear_tags", False)),
             dropped=bool(args["dropped"]) if "dropped" in args else None,
+            **_repeat_kwargs(args),
         )
     )
     if contract is not None:
@@ -942,6 +1047,7 @@ async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
         _service().add_project(
             name=str(args.get("name", "")),
             folder_id=folder_id,
+            validation_model=model,
             due=str(args["due"]) if "due" in args else None,
             defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),

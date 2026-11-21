@@ -107,7 +107,7 @@ class TestTransactionBuilder:
         )
         root = _parse_transaction(builder.to_xml_bytes())
         assert root.get("app-id") == "com.omnigroup.OmniFocus4"
-        assert root.get("app-version") == "185.9.1"
+        assert root.get("app-version") == "185.17.0"
         assert root.get("os-name") == "macOS"
         assert root.get("os-version") == "26.3.1"
         assert root.get("machine-model") == "Mac16,12"
@@ -604,6 +604,23 @@ class TestTransactionBuilder:
         assert task_el.get("op") == "update"
         assert task_el.find(f"{NS}name").text == "APP_SMOKE_1"
         assert task_el.find(f"{NS}flagged") is None
+
+    def test_update_task_fields_renders_recurrence_triad(self) -> None:
+        builder = TransactionBuilder()
+        builder.update_task_fields(
+            task_id="abc123",
+            added_dt=NOW,
+            modified_dt=NOW,
+            repetition_rule="FREQ=MONTHLY;INTERVAL=1",
+            repetition_method="due-after-completion",
+            repetition_schedule_type="from-completion",
+            repetition_anchor_date="dateDue",
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}repetition-schedule-type").text == "from-completion"
+        assert task_el.find(f"{NS}repetition-anchor-date").text == "dateDue"
         assert task_el.find(f"{NS}project") is None
 
     def test_add_delete_snapshot_renders_delete_snapshot_payload(self) -> None:
@@ -896,7 +913,9 @@ class TestTaskWriter:
         root = ET.fromstring(_unzip_contents(data))  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
-        assert task_el.find(f"{NS}hidden") is not None
+        # OmniFocus 4 serializes a dropped task as a <hidden> timestamp.
+        hidden_el = task_el.find(f"{NS}hidden")
+        assert hidden_el is not None and hidden_el.text
 
     def test_default_head_id_generated(self) -> None:
         writer = TaskWriter()

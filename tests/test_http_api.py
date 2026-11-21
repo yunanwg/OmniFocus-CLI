@@ -34,6 +34,7 @@ from omnifocus.http_api import (
     main,
     run_server,
 )
+from omnifocus.models import OFModel
 
 _TEST_API_KEY = "test-api-key"
 _TEST_ALLOWED_HOSTS = ("testserver", "127.0.0.1", "localhost")
@@ -347,6 +348,64 @@ def _create_client(
     )
 
 
+class TestMCP:
+    def test_default_app_has_no_mcp_lifespan(self) -> None:
+        client = _create_client(_FakeService())
+
+        with client:
+            response = client.get("/v1/openapi.json", headers=_auth_headers())
+
+        assert response.status_code == 200
+
+    def test_requires_bearer_authentication(self) -> None:
+        client = _create_client(_FakeService(), enable_mcp=True)
+
+        with client:
+            response = client.post("/mcp/", json={})
+
+        assert response.status_code == 401
+
+    def test_initializes_lists_and_calls_mutation_tools(self) -> None:
+        service = _FakeService()
+        client = _create_client(service, enable_mcp=True)
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        }
+        list_tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        add_task = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "add_task", "arguments": {"name": "Plan release"}},
+        }
+        headers = _auth_headers(Accept="application/json, text/event-stream")
+
+        with (
+            patch("omnifocus.mcp_server._service", return_value=service),
+            patch("omnifocus.mcp_server._load_model", new=AsyncMock(return_value=OFModel())),
+        ):
+            with client:
+                initialized = client.post("/mcp/", json=initialize, headers=headers)
+                tools = client.post("/mcp/", json=list_tools, headers=headers)
+                added = client.post("/mcp/", json=add_task, headers=headers)
+
+        assert initialized.status_code == 200
+        assert tools.status_code == 200
+        assert added.status_code == 200
+        names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+        assert "list_tasks" in names
+        assert "add_task" in names
+        assert service.calls[-1][0] == "add_task"
+        assert service.calls[-1][1]["name"] == "Plan release"
+
+
 def _write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
     """Create a temporary self-signed certificate and private key."""
 
@@ -414,6 +473,34 @@ class TestHTTPServerConfig:
         config = HTTPServerConfig.from_env()
 
         assert config.allowed_hosts == ("127.0.0.1", "localhost", "api.internal")
+
+    def test_from_env_reads_api_key_from_secret_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cert_path, key_path = _write_self_signed_cert(tmp_path)
+        api_key_file = tmp_path / "api-key"
+        api_key_file.write_text("secret-token\n", encoding="utf-8")
+        monkeypatch.setenv("OF_HTTP_API_KEY_FILE", str(api_key_file))
+        monkeypatch.setenv("OF_HTTP_TLS_CERT_FILE", str(cert_path))
+        monkeypatch.setenv("OF_HTTP_TLS_KEY_FILE", str(key_path))
+
+        config = HTTPServerConfig.from_env()
+
+        assert config.api_key == "secret-token"
+
+    def test_from_env_rejects_api_key_and_secret_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cert_path, key_path = _write_self_signed_cert(tmp_path)
+        api_key_file = tmp_path / "api-key"
+        api_key_file.write_text("secret-token", encoding="utf-8")
+        monkeypatch.setenv("OF_HTTP_API_KEY", "secret-token")
+        monkeypatch.setenv("OF_HTTP_API_KEY_FILE", str(api_key_file))
+        monkeypatch.setenv("OF_HTTP_TLS_CERT_FILE", str(cert_path))
+        monkeypatch.setenv("OF_HTTP_TLS_KEY_FILE", str(key_path))
+
+        with pytest.raises(OFError, match="OF_HTTP_API_KEY and OF_HTTP_API_KEY_FILE"):
+            HTTPServerConfig.from_env()
 
     def test_from_env_rejects_empty_allowed_hosts(
         self,
@@ -695,7 +782,13 @@ class TestHTTPAPIRoutes:
                 "today": False,
                 "flagged": True,
                 "due": True,
+                "no_due": False,
+                "no_defer": False,
+                "available": False,
+                "overdue": False,
+                "has_project": False,
                 "project": "Work",
+                "project_status": "all",
                 "tag": "@home",
                 "tag_id": "tag1",
                 "limit": 7,
@@ -1125,8 +1218,9 @@ class TestHTTPServerRuntime:
         config_kwargs = mock_config.call_args.kwargs
         assert config_kwargs["server_header"] is False
         assert config_kwargs["date_header"] is False
-        assert isinstance(fake_uvicorn_config.ssl, ssl.SSLContext)
-        assert fake_uvicorn_config.ssl.minimum_version == ssl.TLSVersion.TLSv1_3
+        ssl_context = config_kwargs["ssl_context_factory"](MagicMock(), MagicMock())
+        assert isinstance(ssl_context, ssl.SSLContext)
+        assert ssl_context.minimum_version == ssl.TLSVersion.TLSv1_3
         mock_server.assert_called_once_with(fake_uvicorn_config)
         fake_server.serve.assert_awaited_once_with()
 

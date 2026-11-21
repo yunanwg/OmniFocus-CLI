@@ -53,6 +53,7 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -65,6 +66,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from omnifocus.crypto.discovery import is_encrypted
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.parser import build_model
@@ -103,6 +105,11 @@ log = logging.getLogger(__name__)
 _CACHE_FILENAME = "of_model.pkl"
 _WRITER_STATE_FILENAME = "writer_state.json"
 _WRITER_IDENTITY_FILENAME = "writer_identity.json"
+
+# A ``.client`` state file listed by PROPFIND can briefly 404 on GET while another device
+# rewrites it (a sync race). Retry a few times, then skip the superseded peer state.
+_CLIENT_FETCH_ATTEMPTS = 3
+_CLIENT_FETCH_RETRY_DELAY = 0.3
 BundleFingerprint = tuple[str, tuple[str, ...], tuple[str, ...]]
 DocumentKeys = dict[int, tuple[bytes, bytes]]
 WriteStrategy = str
@@ -224,7 +231,10 @@ class OFocusStore:
             OFWebDAVError: If required WebDAV env vars are missing.
         """
         client = WebDAVClient.from_env()
-        passphrase = os.environ.get("OF_ENCRYPTION_PASSPHRASE") or _webdav_password_from_env()
+        passphrase = (
+            read_env_or_file("OF_ENCRYPTION_PASSPHRASE", error_type=OFWebDAVError)
+            or _webdav_password_from_env()
+        )
         return cls(client=client, passphrase=passphrase or None)
 
     # ------------------------------------------------------------------
@@ -433,6 +443,10 @@ class OFocusStore:
         note: str = "",
         estimated_minutes: int | None = None,
         rank: int | None = None,
+        repetition_rule: str | None = None,
+        repetition_method: str | None = None,
+        repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
     ) -> dict[str, str]:
         """Create and upload a task transaction."""
         writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
@@ -448,6 +462,10 @@ class OFocusStore:
             note=note,
             estimated_minutes=estimated_minutes,
             rank=rank,
+            repetition_rule=repetition_rule,
+            repetition_method=repetition_method,
+            repetition_schedule_type=repetition_schedule_type,
+            repetition_anchor_date=repetition_anchor_date,
             write_strategy=write_strategy,
             chain_shape=chain_shape,
         )
@@ -961,12 +979,33 @@ class OFocusStore:
     async def _load_remote_client_documents(
         self, state: BundleState
     ) -> dict[str, ClientStateDocument]:
-        """Download and parse remote ``.client`` plist documents."""
+        """Download and parse remote ``.client`` plist documents.
+
+        Tolerates transient sync-race ``404``s: a ``.client`` file that PROPFIND listed can briefly
+        be unreadable while another device rewrites it. Each fetch is retried, then the superseded
+        peer state is skipped rather than failing the whole operation.
+        """
         documents: dict[str, ClientStateDocument] = {}
         for ref in state.clients:
-            data = await self._client.get_file(ref.filename)
+            data = await self._fetch_client_file(ref.filename)
+            if data is None:
+                continue
             documents[ref.client_id] = parse_client_state_plist(data)
         return documents
+
+    async def _fetch_client_file(self, filename: str) -> bytes | None:
+        """Fetch a ``.client`` file, retrying transient 404s and skipping if it stays missing."""
+        for attempt in range(_CLIENT_FETCH_ATTEMPTS):
+            try:
+                return await self._client.get_file(filename)
+            except OFWebDAVError as exc:
+                if exc.status_code != 404:
+                    raise
+                if attempt + 1 < _CLIENT_FETCH_ATTEMPTS:
+                    log.debug("transient 404 for %s, retrying", filename)
+                    await asyncio.sleep(_CLIENT_FETCH_RETRY_DELAY * (attempt + 1))
+        log.warning("skipping client state %s after transient 404s", filename)
+        return None
 
     def _select_client_template(
         self,
@@ -1408,10 +1447,10 @@ def _webdav_password_from_env() -> str:
     passphrase when ``OF_ENCRYPTION_PASSPHRASE`` is not explicitly set
     (OmniFocus *linked password* mode).
     """
-    explicit = os.environ.get("OF_WEBDAV_PASS", "")
+    explicit = read_env_or_file("OF_WEBDAV_PASS", error_type=OFWebDAVError) or ""
     if explicit:
         return explicit
-    raw_url = os.environ.get("OF_WEBDAV_URL", "")
+    raw_url = read_env_or_file("OF_WEBDAV_URL", error_type=OFWebDAVError) or ""
     return urlsplit(raw_url).password or ""
 
 

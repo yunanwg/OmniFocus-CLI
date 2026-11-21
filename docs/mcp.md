@@ -16,6 +16,9 @@ podman run --rm -i of mcp
 
 ## Host Configuration
 
+For an MCP host that passes selected environment variables to `podman`, use variable names rather
+than secret values in the argument list:
+
 ```json
 {
   "mcpServers": {
@@ -43,6 +46,38 @@ podman run --rm -i of mcp
   }
 }
 ```
+
+### Podman secret mounts
+
+For local deployments, mount Podman secrets and pass only their in-container paths. The image runs
+as UID 1001, so mounts must be readable by that user:
+
+```yaml
+mcp_servers:
+  omnifocus:
+    command: podman
+    args:
+      - run
+      - --rm
+      - -i
+      - --secret
+      - of-webdav-url,target=of-webdav-url,uid=1001,gid=1001,mode=0400
+      - --secret
+      - of-webdav-user,target=of-webdav-user,uid=1001,gid=1001,mode=0400
+      - --secret
+      - of-webdav-pass,target=of-webdav-pass,uid=1001,gid=1001,mode=0400
+      - -e
+      - OF_WEBDAV_URL_FILE=/run/secrets/of-webdav-url
+      - -e
+      - OF_WEBDAV_USER_FILE=/run/secrets/of-webdav-user
+      - -e
+      - OF_WEBDAV_PASS_FILE=/run/secrets/of-webdav-pass
+      - of:latest
+```
+
+Create each secret from a trusted interactive input channel with `podman secret create NAME -`.
+Avoid URL-embedded credentials: they appear in process arguments and are easy to leak through
+configuration, logs, and shell history.
 
 ## Tool Surface
 
@@ -118,6 +153,8 @@ format). When it is on:
   `OF_WRITE_CONTRACT` (project, due and tags). The `*` key applies to every
   source while the task stays in the Inbox (due and tags only).
 - `add_task` takes no tags: add the task, then set `tag_ids` with `update_task`.
+- `parent_task_id` and the recurrence fields (`repeat_every`, `repeat_from`,
+  `repetition_rule`, `repetition_method`) have no exception: agents need `user_asked`.
 - `update_task` applies the same checks to Inbox tasks whose note starts with
   `via `, using that line as the source, and keeps the line when the note is
   replaced.

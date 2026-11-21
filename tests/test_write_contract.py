@@ -297,6 +297,22 @@ class TestSchema:
         assert "source" not in tools["add_task"].inputSchema["properties"]
 
     @pytest.mark.asyncio
+    async def test_bad_contract_keeps_reads_and_refuses_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from omnifocus.mcp_server import call_tool
+
+        monkeypatch.setenv(CONTRACT_ENV, '{"*": {"bogus": true}}')
+        tools = {tool.name: tool for tool in await list_tools()}
+        assert "source" in tools["add_task"].inputSchema["properties"]
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await call_tool("add_task", {"name": "T", "source": "Agent"})
+        assert "OF_WRITE_CONTRACT" in _parse_response(result)["error"]
+        mock.add_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_schema_requires_source_when_on(self, contract_on: Path) -> None:
         tools = {tool.name: tool for tool in await list_tools()}
         add = tools["add_task"]
@@ -379,6 +395,14 @@ class TestAddTaskContract:
         assert mock.add_task.await_args.kwargs["parent_task_id"] is None
 
     @pytest.mark.asyncio
+    async def test_rejects_parent_and_repeat(self, contract_on: Path) -> None:
+        data, mock = await _add(
+            {"name": "T", "source": "Agent", "parent_task_id": "t1", "repeat_every": "1w"}
+        )
+        assert "parent_task_id, repeat" in data["error"]
+        mock.add_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_tags_on_add_point_to_update(self, contract_on: Path) -> None:
         data, mock = await _add({"name": "T", "source": "Agent", "tag_ids": ["tag1"]})
         assert "update_task" in data["error"]
@@ -399,6 +423,12 @@ class TestUpdateTaskContract:
         )
         assert "agent task still in the Inbox" in data["error"]
         assert "change flagged on" in data["error"]
+        mock.update_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_repeat_on_agent_inbox_task(self, contract_on: Path) -> None:
+        data, mock = await _update({"task_id": "t2", "repeat_every": "1w"}, _agent_model())
+        assert "change repeat on" in data["error"]
         mock.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio

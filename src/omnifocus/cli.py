@@ -62,9 +62,13 @@ Author: Maciej Szymczak <maciej@szymczak.at>
 
 Environment:
   OF_WEBDAV_URL             WebDAV bundle URL (required)
+  OF_WEBDAV_URL_FILE        File containing the WebDAV bundle URL
   OF_WEBDAV_USER            WebDAV username (optional override)
+  OF_WEBDAV_USER_FILE       File containing the WebDAV username
   OF_WEBDAV_PASS            WebDAV password (optional override)
+  OF_WEBDAV_PASS_FILE       File containing the WebDAV password
   OF_ENCRYPTION_PASSPHRASE  Encryption passphrase (defaults to WebDAV password)
+  OF_ENCRYPTION_PASSPHRASE_FILE  File containing the encryption passphrase
   OF_CACHE_DIR              Cache directory (default: /tmp/of-cache)
 
 Common commands:
@@ -551,8 +555,10 @@ def task_update_cmd(
             project = model.projects.get(project_id)
             if project is None:
                 raise click.ClickException(f"Project not found: {project_id}")
-            if project.status != "active":
-                raise click.ClickException(f"Project is not active: {project_id}")
+            if project.status in {"done", "dropped"}:
+                raise click.ClickException(
+                    f"Cannot move task into a {project.status} project: {project_id}"
+                )
             parent_task_id = project.id
             containing_project_id = project.id
             inbox = False

@@ -20,12 +20,12 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
 import logging
-import os
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import httpx
 
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFWebDAVError
 
 log = logging.getLogger(__name__)
@@ -47,8 +47,8 @@ class WebDAVClient:
         base_url: Full URL to the directory containing bundle files,
             e.g. ``https://dav.example.com/omnifocus/OmniFocus.ofocus/``.
             A trailing slash is required.
-        username: WebDAV Basic Auth username.
-        password: WebDAV Basic Auth password.  Never logged.
+        username: WebDAV username (HTTP Digest auth).
+        password: WebDAV password (HTTP Digest auth).  Never logged.
         timeout: HTTP request timeout in seconds.
     """
 
@@ -104,7 +104,7 @@ class WebDAVClient:
             OFWebDAVError: If ``OF_WEBDAV_URL`` is missing, or if credentials
                 cannot be found in either the URL or the separate variables.
         """
-        raw_url = os.environ.get("OF_WEBDAV_URL", "")
+        raw_url = read_env_or_file("OF_WEBDAV_URL", error_type=OFWebDAVError) or ""
         if not raw_url:
             raise OFWebDAVError("Missing required environment variable: OF_WEBDAV_URL")
 
@@ -123,8 +123,8 @@ class WebDAVClient:
             clean_url = raw_url
 
         # Explicit env vars override URL-embedded credentials
-        username = os.environ.get("OF_WEBDAV_USER") or url_user
-        password = os.environ.get("OF_WEBDAV_PASS") or url_pass
+        username = read_env_or_file("OF_WEBDAV_USER", error_type=OFWebDAVError) or url_user
+        password = read_env_or_file("OF_WEBDAV_PASS", error_type=OFWebDAVError) or url_pass
 
         missing = []
         if not username:

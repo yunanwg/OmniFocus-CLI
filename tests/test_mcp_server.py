@@ -744,11 +744,15 @@ class TestHandleUpdateTask:
         assert data["error"] == "Project not found: missing"
 
     @pytest.mark.asyncio
-    async def test_update_project_id_must_be_active(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
-            result = await _handle_update_task({"task_id": "t1", "project_id": "p3"})
+    async def test_update_project_id_rejects_done_project(self) -> None:
+        model = _make_model()
+        model.projects["p_done"] = dataclasses.replace(
+            model.projects["p1"], id="p_done", status="done"
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_update_task({"task_id": "t1", "project_id": "p_done"})
         data = _parse_response(result)
-        assert data["error"] == "Project is not active: p3"
+        assert data["error"] == "Cannot move task into a done project: p_done"
 
     @pytest.mark.asyncio
     async def test_update_project_id_conflicts_with_clear_project(self) -> None:
@@ -1063,10 +1067,21 @@ class TestHandleListProjects:
         assert data["error"] == "Tag not found: missing"
 
 
+class _FixedNowDatetime(datetime):
+    """datetime subclass with a frozen ``now`` so review tests are clock-independent."""
+
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+        return datetime(2026, 3, 20, 12, 0, 0, tzinfo=tz)
+
+
 class TestHandleListProjectsForReview:
     @pytest.mark.asyncio
     async def test_returns_due_review_projects_only_by_default(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+        with (
+            patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())),
+            patch("omnifocus.api_service.datetime", _FixedNowDatetime),
+        ):
             result = await _handle_list_projects_for_review({})
         data = _parse_response(result)
         assert [project["id"] for project in data] == ["p1", "p3"]
@@ -1074,10 +1089,16 @@ class TestHandleListProjectsForReview:
 
     @pytest.mark.asyncio
     async def test_can_include_non_due_review_projects(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+        with (
+            patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())),
+            patch("omnifocus.api_service.datetime", _FixedNowDatetime),
+        ):
             result = await _handle_list_projects_for_review({"due_only": False})
         data = _parse_response(result)
         assert {project["id"] for project in data} == {"p1", "p2", "p3"}
+        # With the clock frozen at 2026-03-20, p2's next review (2026-04-15) is not yet due,
+        # exercising the "known basis, not due" ordering bucket.
+        assert any(project["id"] == "p2" and not project["review_due"] for project in data)
 
     @pytest.mark.asyncio
     async def test_unknown_review_schedule_sorts_last(self) -> None:

@@ -19,7 +19,7 @@ A key matches when it appears in the caller's ``source`` (case-insensitive).
 The ``*`` key applies to every source, but only to a write that leaves the
 task in the Inbox (no project set): agents may suggest tags and a due date
 there and the user triages. It cannot name a project. A source's own key and
-``*`` add up. Defer and flag have no exception.
+``*`` add up. Defer, flag, a parent task and repetition have no exception.
 A call that carries ``user_asked`` (the user's own words asking for the field)
 bypasses the field checks; it is logged.
 
@@ -113,6 +113,8 @@ class WriteContract:
         defer: str | None = None,
         flagged: bool = False,
         tags: bool = False,
+        parent: bool = False,
+        repeat: bool = False,
         today: date,
     ) -> list[str]:
         """Return the fields this source may not set, in a stable order.
@@ -138,6 +140,10 @@ class WriteContract:
             rejected.append("flagged")
         if tags and not (exc.tags or (inbox is not None and inbox.tags)):
             rejected.append("tags")
+        if parent:
+            rejected.append("parent_task_id")
+        if repeat:
+            rejected.append("repeat")
         return rejected
 
     @staticmethod
@@ -148,7 +154,7 @@ class WriteContract:
         return (
             f"Rejected by the OmniFocus write contract: agents may not {what} "
             f"{', '.join(fields)} on {target}. Agent tasks go to the Inbox with no "
-            "project, defer or flag; tags and a due date only where the contract "
+            "project, parent, defer, flag or repeat; tags and a due date only where the contract "
             "allows them for this source. Leave filing to the user. Pass user_asked "
             "with the user's own words only when the user explicitly asked for this "
             "field."

@@ -15,6 +15,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   task write is appended to a JSON Lines log
 - Write contract `*` key: lets every source suggest tags and a due date on tasks
   that stay in the Inbox; exceptions can also allow `tags`
+- Write contract covers upstream's subtask and recurrence fields: `parent_task_id`
+  and `repeat_*`/`repetition_*` on agent tasks need `user_asked`
 
 ### Fixed
 
@@ -23,10 +25,86 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `add_task` with `tag_ids` now errors (pointing to `update_task`) instead of
   creating the task and silently dropping the tags
 
+## [1.4.1] - 2026-07-18
+
+### Fixed
+
+- Configure Uvicorn's TLS context before server startup so the HTTPS listener
+  presents its certificate and enforces TLS 1.3
+
+## [1.4.0] - 2026-07-18
+
 ### Changed
 
+- Expose the complete read/write OmniFocus MCP tool set through the authenticated HTTPS `/mcp/`
+  endpoint, matching the existing stdio MCP transport
+- Remove the temporary server-side read-only restriction from the local Hermes deployment guide
+
+## [1.3.0] - 2026-07-17
+
+### Added
+
+- Expose a stateless, read-only Streamable HTTP MCP endpoint at `/mcp/` on the
+  existing HTTPS listener, protected by the existing bearer API key and TLS 1.3
+- Support `*_FILE` variants for sensitive configuration, including WebDAV
+  credentials, the encryption passphrase, and the HTTP API key, for safe
+  container secret mounts
+- Provide copy-paste deployment guidance for a long-lived local MCP service,
+  including a self-signed localhost TLS certificate and Hermes configuration
+
+### Changed
+
+- Reuse already-loaded OmniFocus models during MCP task and project creation to
+  avoid redundant WebDAV loads
+
+### Security
+
+- Keep the network MCP surface server-side read-only and enforce its tool
+  allowlist independently of client configuration
+- Document certificate trust-anchor verification for localhost and discourage
+  insecure TLS bypasses and URL-embedded credentials
+
+## [1.2.0] - 2026-06-24
+
+### Added
+
+- Set task recurrence from the MCP, HTTP, and CLI surfaces via a `repeat_every`
+  shorthand (`30d`, `6w`, `3m`, `1y`) plus `repeat_from`
+  (`fixed`/`due`/`defer`/`completion`/`start-after-completion`/`due-after-completion`),
+  or raw `repetition_rule`/`repetition_method` tokens, on `add_task` and `update_task`
+- Create subtasks by passing `parent_task_id` to nest a task under an existing
+  task or project
+- Add opt-in GTD review filters to `list_tasks` (`no_due`, `no_defer`,
+  `available`, `overdue`, `has_project`) and a `project_status`
+  (`active`/`inactive`/`all`) filter
+- Accept `defer` on task creation, symmetric with `update_task`
+
+### Changed
+
+- Allow creating and moving tasks into active and inactive (on-hold) projects;
+  only `done`/`dropped` targets are rejected, removing the
+  activate-move-deactivate workaround
+- Include `project_status`, `project_folder_name`, and a `defer` alias in the
+  task summary so review agents can filter without extra lookups
 - Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
   fixed `Pygments` release is available in the resolved dependency graph
+
+### Fixed
+
+- Align task recurrence serialization with the tokens real OmniFocus 4 clients
+  write to the sync bundle (`from-assigned`/`from-completion` schedule types and
+  `dateDue`/`dateToStart` anchor tokens) so repeating tasks round-trip the way
+  the app itself records them
+- Retry transient `404` responses when fetching peer `.client` state files
+  during a concurrent sync instead of failing the whole read or write
+- Parenthesize multi-type `except` clauses so the `api_service` and `store`
+  modules import on every Python 3 interpreter
+
+### Security
+
+- Bump `cryptography` to `>=48.0.1` (GHSA-537c-gmf6-5ccf) and `starlette` to
+  `>=1.3.1` (PYSEC-2026-161, CVE-2026-48818/48817/54283/54282), moving `fastapi`
+  to `0.138.x` to allow the Starlette 1.x line that carries the fixes
 
 ## [1.1.0] - 2026-04-07
 

@@ -45,6 +45,7 @@ from typing import Any
 
 from omnifocus.errors import OFParseError
 from omnifocus.models import Folder, OFModel, Perspective, Project, Tag, Task
+from omnifocus.recursion_limit import ensure_recursion_limit
 
 # OmniFocus v2 XML namespace
 _NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
@@ -603,6 +604,10 @@ def build_model(
     """
     if transaction_bytes_list is None:
         transaction_bytes_list = []
+
+    # Deep parent chains and nested ElementTree trees recurse past the default
+    # limit during deepcopy/resolve; raise it before parsing.
+    ensure_recursion_limit()
 
     # Step 1: build raw element index from baseline
     index: _RawIndex = {}
