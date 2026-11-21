@@ -789,13 +789,17 @@ class TestTaskUpdateCmd:
         assert result.exit_code != 0
         assert "Project not found: missing" in result.output
 
-    def test_task_update_project_id_must_be_active(self) -> None:
+    def test_task_update_project_id_rejects_done_project(self) -> None:
         runner = CliRunner()
-        mock = _mock_store()
+        model = _make_model()
+        model.projects["p_done"] = dataclasses.replace(
+            model.projects["p1"], id="p_done", status="done"
+        )
+        mock = _mock_store(model)
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
-            result = runner.invoke(cli, ["task-update", "Write tests", "--project-id", "p3"])
+            result = runner.invoke(cli, ["task-update", "Write tests", "--project-id", "p_done"])
         assert result.exit_code != 0
-        assert "Project is not active: p3" in result.output
+        assert "Cannot move task into a done project: p_done" in result.output
 
     def test_task_update_webdav_error(self) -> None:
         runner = CliRunner()

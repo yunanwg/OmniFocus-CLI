@@ -26,7 +26,7 @@ from omnifocus.models import Folder, Project, Tag, Task
 
 _NS = "http://www.omnigroup.com/namespace/OmniFocus/v2"
 _APP_ID = "com.omnigroup.OmniFocus4"
-_APP_VERSION = "185.9.1"
+_APP_VERSION = "185.17.0"
 _APP_LIKE_INBOX_RANK_BASE = 2_147_482_647
 WriteStrategy = str
 ChainShape = str
@@ -561,6 +561,10 @@ class TransactionBuilder:
         completed_dt: datetime | None = None,
         hidden_dt: datetime | None = None,
         tag_ids: tuple[str, ...] | None = None,
+        repetition_rule: str | None = None,
+        repetition_method: str | None = None,
+        repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
     ) -> None:
         """Add an ``op="update"`` task element with only changed fields."""
         self._elements.append(
@@ -581,10 +585,10 @@ class TransactionBuilder:
                 note=note,
                 order=None,
                 estimated_minutes=estimated_minutes,
-                repetition_rule=None,
-                repetition_method=None,
-                repetition_schedule_type=None,
-                repetition_anchor_date=None,
+                repetition_rule=repetition_rule,
+                repetition_method=repetition_method,
+                repetition_schedule_type=repetition_schedule_type,
+                repetition_anchor_date=repetition_anchor_date,
                 catch_up_automatically=None,
                 next_clone_identifier=None,
                 due_date_alarm_policy=None,
@@ -906,6 +910,10 @@ class TaskWriter:
         estimated_minutes: int | None = None,
         task_id: str | None = None,
         rank: int | None = None,
+        repetition_rule: str | None = None,
+        repetition_method: str | None = None,
+        repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
         write_strategy: WriteStrategy = "client_after_each_delta",
         chain_shape: ChainShape = "app_rebase",
     ) -> AddTaskPlan:
@@ -970,7 +978,12 @@ class TaskWriter:
             )
             builders.append((flagged_builder, flagged_time))
 
-        if due_dt is not None or start_dt is not None or estimated_minutes is not None:
+        if (
+            due_dt is not None
+            or start_dt is not None
+            or estimated_minutes is not None
+            or repetition_rule is not None
+        ):
             extra_builder = TransactionBuilder(context=self._context)
             extra_time = _next_second_time()
             extra_builder.update_task_fields(
@@ -980,6 +993,10 @@ class TaskWriter:
                 due_dt=due_dt,
                 start_dt=start_dt,
                 estimated_minutes=estimated_minutes,
+                repetition_rule=repetition_rule,
+                repetition_method=repetition_method,
+                repetition_schedule_type=repetition_schedule_type,
+                repetition_anchor_date=repetition_anchor_date,
             )
             builders.append((extra_builder, extra_time))
 

@@ -379,6 +379,14 @@ class TestAddTaskContract:
         assert mock.add_task.await_args.kwargs["parent_task_id"] is None
 
     @pytest.mark.asyncio
+    async def test_rejects_parent_and_repeat(self, contract_on: Path) -> None:
+        data, mock = await _add(
+            {"name": "T", "source": "Agent", "parent_task_id": "t1", "repeat_every": "1w"}
+        )
+        assert "parent_task_id, repeat" in data["error"]
+        mock.add_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_tags_on_add_point_to_update(self, contract_on: Path) -> None:
         data, mock = await _add({"name": "T", "source": "Agent", "tag_ids": ["tag1"]})
         assert "update_task" in data["error"]
@@ -399,6 +407,12 @@ class TestUpdateTaskContract:
         )
         assert "agent task still in the Inbox" in data["error"]
         assert "change flagged on" in data["error"]
+        mock.update_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_repeat_on_agent_inbox_task(self, contract_on: Path) -> None:
+        data, mock = await _update({"task_id": "t2", "repeat_every": "1w"}, _agent_model())
+        assert "change repeat on" in data["error"]
         mock.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio

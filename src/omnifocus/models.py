@@ -139,7 +139,8 @@ class Task:
         due: Wall-clock due datetime (local time), or ``None``.
         start: Wall-clock defer datetime (local time), or ``None``.
         hidden: UTC datetime when the task was dropped/hidden, or ``None`` if
-            visible.
+            visible.  OmniFocus 4 serializes a dropped task as a ``<hidden>``
+            timestamp.
         note: Plain-text note (may be empty).
         rank: Integer sort key within the parent.
         repetition_rule: RFC 5545 RRULE string, or ``None`` for non-repeating tasks.

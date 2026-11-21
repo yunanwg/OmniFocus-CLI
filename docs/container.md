@@ -35,6 +35,34 @@ podman run --rm \
   of sync
 ```
 
+## Secrets
+
+Do not embed a username or password in `OF_WEBDAV_URL`, command arguments, or checked-in
+configuration. The WebDAV URL, username, password, encryption passphrase, and HTTPS API key
+also support a mutually exclusive `_FILE` form. This is intended for mounted secret files.
+
+For a rootless Podman container, create secrets through a trusted interactive input mechanism,
+then mount them read-only for the runtime user (UID 1001):
+
+```bash
+podman secret create of-webdav-url -
+podman secret create of-webdav-user -
+podman secret create of-webdav-pass -
+
+podman run --rm -i \
+  --secret of-webdav-url,target=of-webdav-url,uid=1001,gid=1001,mode=0400 \
+  --secret of-webdav-user,target=of-webdav-user,uid=1001,gid=1001,mode=0400 \
+  --secret of-webdav-pass,target=of-webdav-pass,uid=1001,gid=1001,mode=0400 \
+  -e OF_WEBDAV_URL_FILE=/run/secrets/of-webdav-url \
+  -e OF_WEBDAV_USER_FILE=/run/secrets/of-webdav-user \
+  -e OF_WEBDAV_PASS_FILE=/run/secrets/of-webdav-pass \
+  ghcr.io/szymczag/omnifocus-cli:latest
+```
+
+Mounted Podman secrets keep their contents out of process arguments and ordinary container
+environment inspection. They do not protect against root or another principal that can read the
+running container's mounts. Rotate a secret by recreating it and recreating the container.
+
 ## CLI vs MCP
 
 - `podman run --rm of sync`
@@ -97,10 +125,15 @@ podman run --rm --pull=always ghcr.io/szymczag/omnifocus-cli:latest --version
 | `OF_WEBDAV_USER` | No | Explicit WebDAV username |
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase |
+| `OF_WEBDAV_URL_FILE` | No | File containing the WebDAV URL; conflicts with `OF_WEBDAV_URL` |
+| `OF_WEBDAV_USER_FILE` | No | File containing the WebDAV username; conflicts with `OF_WEBDAV_USER` |
+| `OF_WEBDAV_PASS_FILE` | No | File containing the WebDAV password; conflicts with `OF_WEBDAV_PASS` |
+| `OF_ENCRYPTION_PASSPHRASE_FILE` | No | File containing the decryption passphrase; conflicts with `OF_ENCRYPTION_PASSPHRASE` |
 | `OF_CACHE_DIR` | No | Writable cache directory |
 | `OF_HTTP_HOST` | No | HTTPS API bind host (default `127.0.0.1`) |
 | `OF_HTTP_PORT` | No | HTTPS API bind port (default `8443`) |
 | `OF_HTTP_API_KEY` | HTTPS only | Required Bearer token for the HTTPS API |
+| `OF_HTTP_API_KEY_FILE` | HTTPS only | File containing the Bearer token; conflicts with `OF_HTTP_API_KEY` |
 | `OF_HTTP_TLS_CERT_FILE` | HTTPS only | TLS certificate PEM path |
 | `OF_HTTP_TLS_KEY_FILE` | HTTPS only | TLS private key PEM path |
 | `OF_HTTP_ALLOWED_HOSTS` | HTTPS only | Comma-separated trusted host allowlist |

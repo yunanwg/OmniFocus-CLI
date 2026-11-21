@@ -5,6 +5,7 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import io
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC
@@ -24,6 +25,7 @@ from omnifocus.parser import (
     build_model,
     load_xml_from_zip,
 )
+from omnifocus.recursion_limit import MIN_RECURSION_LIMIT
 from tests.conftest import make_zip
 
 NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
@@ -243,6 +245,25 @@ class TestBuildModel:
     def test_empty_transaction_list(self, sample_zip: bytes) -> None:
         model = build_model(sample_zip, transaction_bytes_list=[])
         assert len(model.tasks) > 0
+
+    def test_raises_recursion_limit_when_too_low(self, sample_zip: bytes) -> None:
+        original = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(100)
+            model = build_model(sample_zip)
+            assert len(model.tasks) > 0
+            assert sys.getrecursionlimit() >= MIN_RECURSION_LIMIT
+        finally:
+            sys.setrecursionlimit(original)
+
+    def test_does_not_lower_higher_recursion_limit(self, sample_zip: bytes) -> None:
+        original = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(MIN_RECURSION_LIMIT + 10_000)
+            build_model(sample_zip)
+            assert sys.getrecursionlimit() == MIN_RECURSION_LIMIT + 10_000
+        finally:
+            sys.setrecursionlimit(original)
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +683,41 @@ class TestTransactionMerge:
             "weekly-review-2",
         }
 
+
+class TestWriterParserRoundTrip:
+    """End-to-end: a transaction produced by the writer parses back to the same intent."""
+
+    def test_drop_round_trips_to_hidden_field(self) -> None:
+        from omnifocus.writer import TaskWriter
+
+        base = make_zip(_BASE_XML)
+        task = build_model(base).tasks["t1"]
+        _, drop_delta = TaskWriter(head_id="tailA", parent_tail_id="tail0").drop_task(task)
+        model = build_model(base, [drop_delta])
+        # OmniFocus 4 serializes a dropped task as a <hidden> timestamp.
+        assert model.tasks["t1"].hidden is not None
+
+    def test_recurrence_triad_round_trips(self) -> None:
+        import dataclasses
+
+        from omnifocus.writer import TaskWriter
+
+        base = make_zip(_BASE_XML)
+        task = dataclasses.replace(
+            build_model(base).tasks["t1"],
+            repetition_rule="FREQ=MONTHLY;INTERVAL=1",
+            repetition_method="due-after-completion",
+            repetition_schedule_type="from-completion",
+            repetition_anchor_date="dateDue",
+        )
+        _, delta = TaskWriter(head_id="tailA", parent_tail_id="tail0").update_task(task)
+        parsed = build_model(base, [delta]).tasks["t1"]
+        assert parsed.repetition_schedule_type == "from-completion"
+        assert parsed.repetition_anchor_date == "dateDue"
+        assert parsed.repetition_method == "due-after-completion"
+
+
+class TestTransactionMergeExtra:
     def test_update_without_name_merges_into_existing_task(self) -> None:
         base = make_zip(_BASE_XML)
         tx = make_zip("""\

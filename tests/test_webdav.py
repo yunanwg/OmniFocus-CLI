@@ -4,6 +4,8 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -128,6 +130,54 @@ class TestFromEnv:
         client = WebDAVClient.from_env()
         assert "8443" in client._base_url
         assert "u:p" not in client._base_url
+
+    def test_reads_credentials_from_secret_files(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        url_file = tmp_path / "url"
+        user_file = tmp_path / "user"
+        pass_file = tmp_path / "pass"
+        url_file.write_text(BASE_URL + "\n", encoding="utf-8")
+        user_file.write_text("secret-user\n", encoding="utf-8")
+        pass_file.write_text("secret-pass\n", encoding="utf-8")
+        monkeypatch.setenv("OF_WEBDAV_URL_FILE", str(url_file))
+        monkeypatch.setenv("OF_WEBDAV_USER_FILE", str(user_file))
+        monkeypatch.setenv("OF_WEBDAV_PASS_FILE", str(pass_file))
+
+        client = WebDAVClient.from_env()
+
+        assert client._base_url == BASE_URL
+        auth = client._client.auth
+        assert isinstance(auth, httpx.DigestAuth)
+        assert auth._username == b"secret-user"
+        assert auth._password == b"secret-pass"
+
+    def test_rejects_ambiguous_secret_configuration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        secret_file = tmp_path / "pass"
+        secret_file.write_text("secret-pass", encoding="utf-8")
+        monkeypatch.setenv("OF_WEBDAV_URL", BASE_URL)
+        monkeypatch.setenv("OF_WEBDAV_USER", "user")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "pass")
+        monkeypatch.setenv("OF_WEBDAV_PASS_FILE", str(secret_file))
+
+        with pytest.raises(OFWebDAVError, match="OF_WEBDAV_PASS and OF_WEBDAV_PASS_FILE"):
+            WebDAVClient.from_env()
+
+    def test_does_not_expose_secret_file_path_in_errors(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        secret_path = tmp_path / "private-password"
+        monkeypatch.setenv("OF_WEBDAV_URL", BASE_URL)
+        monkeypatch.setenv("OF_WEBDAV_USER", "user")
+        monkeypatch.setenv("OF_WEBDAV_PASS_FILE", str(secret_path))
+
+        with pytest.raises(OFWebDAVError) as exc_info:
+            WebDAVClient.from_env()
+
+        assert "OF_WEBDAV_PASS_FILE" in str(exc_info.value)
+        assert str(secret_path) not in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +38,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from omnifocus import __version__
 from omnifocus.api_service import StoreBackedApiService, default_api_service
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFError, OFHTTPError
+from omnifocus.mcp_http import MCPHTTPApp
 
 _MAX_JSON_BODY_BYTES = 1024 * 1024
 _DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost")
@@ -74,7 +76,7 @@ class HTTPServerConfig:
     def from_env(cls) -> HTTPServerConfig:
         """Load and validate HTTPS API configuration from environment variables."""
 
-        api_key = os.getenv("OF_HTTP_API_KEY")
+        api_key = read_env_or_file("OF_HTTP_API_KEY", error_type=OFError)
         cert_path = os.getenv("OF_HTTP_TLS_CERT_FILE")
         key_path = os.getenv("OF_HTTP_TLS_KEY_FILE")
         missing = [
@@ -263,10 +265,13 @@ class TaskSummaryModel(EnvelopeModel):
     name: str
     project: str | None
     project_id: str | None
+    project_status: str | None = None
+    project_folder_name: str | None = None
     inbox: bool
     flagged: bool
     due: datetime | None
     start: datetime | None
+    defer: datetime | None = None
     completed: datetime | None
     note: str
     tag_ids: list[str]
@@ -457,9 +462,15 @@ class AddTaskRequest(EnvelopeModel):
 
     name: str
     project_id: str | None = None
+    parent_task_id: str | None = None
     due: str | None = None
+    defer: str | None = None
     flagged: bool = False
     note: str = ""
+    repeat_every: str | None = None
+    repeat_from: str | None = None
+    repetition_rule: str | None = None
+    repetition_method: str | None = None
 
 
 class UpdateTaskRequest(EnvelopeModel):
@@ -481,6 +492,10 @@ class UpdateTaskRequest(EnvelopeModel):
     tag_ids: list[str] | None = None
     clear_tags: bool = False
     dropped: bool | None = None
+    repeat_every: str | None = None
+    repeat_from: str | None = None
+    repetition_rule: str | None = None
+    repetition_method: str | None = None
 
 
 class AddProjectRequest(EnvelopeModel):
@@ -998,6 +1013,7 @@ def create_app(
     auth_failure_limit: int = _AUTH_FAILURE_LIMIT,
     auth_failure_window_seconds: float = _AUTH_FAILURE_WINDOW_SECONDS,
     request_timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    enable_mcp: bool = False,
 ) -> FastAPI:
     """Create the FastAPI HTTPS application."""
 
@@ -1006,6 +1022,15 @@ def create_app(
         raise OFError("At least one HTTP API key is required")
     resolved_service = default_api_service() if service is None else service
     resolved_allowed_hosts = tuple(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
+    mcp_app = MCPHTTPApp() if enable_mcp else None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Any:
+        if mcp_app is None:
+            yield
+            return
+        async with mcp_app.lifespan():
+            yield
 
     app = FastAPI(
         title="OmniFocus HTTPS API",
@@ -1013,8 +1038,11 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url="/v1/openapi.json",
+        lifespan=lifespan,
     )
     _configure_openapi(app)
+    if mcp_app is not None:
+        app.mount("/mcp", mcp_app)
 
     @app.exception_handler(OFError)
     async def of_error_handler(_request: Request, exc: Exception) -> JSONResponse:
@@ -1075,7 +1103,13 @@ def create_app(
         today: bool = Query(False),
         flagged: bool = Query(False),
         due: bool = Query(False),
+        no_due: bool = Query(False),
+        no_defer: bool = Query(False),
+        available: bool = Query(False),
+        overdue: bool = Query(False),
+        has_project: bool = Query(False),
         project: str | None = Query(None),
+        project_status: str = Query("all"),
         tag: str | None = Query(None),
         tag_id: str | None = Query(None),
         limit: int = Query(50),
@@ -1087,7 +1121,13 @@ def create_app(
             today=today,
             flagged=flagged,
             due=due,
+            no_due=no_due,
+            no_defer=no_defer,
+            available=available,
+            overdue=overdue,
+            has_project=has_project,
             project=project,
+            project_status=project_status,
             tag=tag,
             tag_id=tag_id,
             limit=limit,
@@ -1132,9 +1172,15 @@ def create_app(
         result = await resolved_service.add_task(
             name=body.name,
             project_id=body.project_id,
+            parent_task_id=body.parent_task_id,
             due=body.due,
+            defer=body.defer,
             flagged=body.flagged,
             note=body.note,
+            repeat_every=body.repeat_every,
+            repeat_from=body.repeat_from,
+            repetition_rule=body.repetition_rule,
+            repetition_method=body.repetition_method,
         )
         return _success_envelope(TaskMutationResult.model_validate(result), status_code=201)
 
@@ -1160,6 +1206,10 @@ def create_app(
             tag_ids=None if body.tag_ids is None else tuple(body.tag_ids),
             clear_tags=body.clear_tags,
             dropped=body.dropped,
+            repeat_every=body.repeat_every,
+            repeat_from=body.repeat_from,
+            repetition_rule=body.repetition_rule,
+            repetition_method=body.repetition_method,
         )
         return _success_envelope(TaskMutationResult.model_validate(result))
 
@@ -1512,6 +1562,7 @@ async def _serve_uvicorn(
         api_keys=config.api_keys,
         allowed_hosts=config.allowed_hosts,
         service=service,
+        enable_mcp=True,
     )
     uvicorn_config = uvicorn.Config(
         app,
@@ -1521,9 +1572,9 @@ async def _serve_uvicorn(
         log_level="warning",
         server_header=False,
         date_header=False,
+        ssl_context_factory=lambda _uvicorn_config, _default_factory: build_ssl_context(config),
     )
     uvicorn_config.load()
-    uvicorn_config.ssl = build_ssl_context(config)
     server = uvicorn.Server(uvicorn_config)
     await server.serve()
 
