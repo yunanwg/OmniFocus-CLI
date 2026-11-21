@@ -147,6 +147,7 @@ Today the project supports:
 
 - direct WebDAV sync of OmniFocus bundles
 - tasks, projects, folders, and tags
+- reading perspective definitions over MCP (`list_perspectives`)
 - project review workflow over MCP
 - HTTPS JSON API for tasks, projects, folders, tags, review, and sync
 - MCP over stdio
@@ -154,7 +155,7 @@ Today the project supports:
 
 Not yet implemented:
 
-- perspectives
+- perspective writes, and perspectives in the CLI and HTTP API
 - statistics commands
 - dedicated inbox subcommands
 

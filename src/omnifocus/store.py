@@ -1206,6 +1206,11 @@ class OFocusStore:
             cached = pickle.loads(data)  # noqa: S301 — trusted internal cache
             log.debug("Cache hit: %s", self._cache_path)
             if isinstance(cached, _CachePayload):
+                # A cache pickled before a model field existed lacks it; rebuild.
+                if not all(
+                    hasattr(cached.model, item.name) for item in dataclasses.fields(OFModel)
+                ):
+                    return None
                 return cached
             if isinstance(cached, OFModel):
                 return _CachePayload(model=cached, bundle_fingerprint=None)

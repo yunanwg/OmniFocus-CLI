@@ -32,6 +32,7 @@ from omnifocus.mcp_server import (
     _handle_get_tag,
     _handle_get_task,
     _handle_list_folders,
+    _handle_list_perspectives,
     _handle_list_projects,
     _handle_list_projects_for_review,
     _handle_list_tags,
@@ -61,7 +62,7 @@ from omnifocus.mcp_server import (
     main,
     run_http,
 )
-from omnifocus.models import Folder, OFModel, Project, Tag, Task
+from omnifocus.models import Folder, OFModel, Perspective, Project, Tag, Task
 
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
@@ -259,9 +260,9 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_twenty_five_tools(self) -> None:
+    async def test_returns_twenty_six_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 25
+        assert len(tools) == 26
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
@@ -289,6 +290,7 @@ class TestListTools:
             "drop_folder",
             "list_tags",
             "get_tag",
+            "list_perspectives",
             "add_tag",
             "update_tag",
             "drop_tag",
@@ -1310,6 +1312,57 @@ class TestHandleFolderTools:
             result = await _handle_drop_folder({"folder_id": "missing"})
         data = _parse_response(result)
         assert "error" in data
+
+
+class TestHandleListPerspectives:
+    @staticmethod
+    def _model() -> OFModel:
+        model = _make_model()
+        model.perspectives["v1"] = Perspective(
+            id="v1",
+            name="Today",
+            definition={
+                "name": "Today",
+                "filterRules": [{"actionHasAnyOfTags": ["tag1", "unknown"]}],
+                "focus": ["p1", "f1"],
+                "version": 3,
+            },
+            added=NOW,
+        )
+        model.perspectives["v2"] = Perspective(id="v2", name="Someday")
+        return model
+
+    @pytest.mark.asyncio
+    async def test_lists_all_sorted_with_references(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=self._model())):
+            result = await _handle_list_perspectives({})
+        data = _parse_response(result)
+        assert [item["name"] for item in data] == ["Someday", "Today"]
+        today = data[1]
+        assert today["added"] == NOW.isoformat()
+        assert today["definition"]["filterRules"][0]["actionHasAnyOfTags"] == ["tag1", "unknown"]
+        assert today["references"] == {
+            "f1": {"type": "folder", "name": "Work"},
+            "p1": {"type": "project", "name": "Engineering"},
+            "tag1": {"type": "tag", "name": model_tag_name()},
+        }
+        assert data[0]["references"] == {}
+
+    @pytest.mark.asyncio
+    async def test_name_filter_is_case_insensitive(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=self._model())):
+            result = await _handle_list_perspectives({"name": "toD"})
+        assert [item["id"] for item in _parse_response(result)] == ["v1"]
+
+    @pytest.mark.asyncio
+    async def test_is_annotated_read_only(self) -> None:
+        tools = {tool.name: tool for tool in await list_tools()}
+        annotations = tools["list_perspectives"].annotations
+        assert annotations is not None and annotations.readOnlyHint is True
+
+
+def model_tag_name() -> str:
+    return _make_model().tags["tag1"].name
 
 
 class TestHandleTagTools:

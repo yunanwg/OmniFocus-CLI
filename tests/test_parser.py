@@ -983,3 +983,96 @@ class TestEdgeCases:
         model = build_model(make_zip(xml))
         assert model.tasks["a"].project_id is None
         assert model.tasks["b"].project_id is None
+
+
+# ---------------------------------------------------------------------------
+# Perspectives
+# ---------------------------------------------------------------------------
+
+_PERSPECTIVE_XML = f"""<?xml version="1.0" encoding="utf-8"?>
+<omnifocus xmlns="{NS[1:-1]}" app-id="com.omnigroup.OmniFocus4">
+  <context id="tagP1"><name>P1</name></context>
+  <perspective id="persp1">
+    <added>2026-01-02T03:04:05.000Z</added>
+    <modified>2026-02-03T04:05:06.000Z</modified>
+    <plist version="1.0">
+      <dict>
+        <key>name</key><string>Today</string>
+        <key>version</key><integer>3</integer>
+        <key>iconScale</key><real>1.5</real>
+        <key>filterRulesAggregation</key><string>all</string>
+        <key>filterRules</key>
+        <string>[{{"actionAvailability":"available"}},{{"aggregateType":"any","aggregateRules":[{{"actionHasAnyOfTags":["tagP1"]}},{{"actionStatus":"flagged"}}]}}]</string>
+        <key>showsCompleted</key><false/>
+        <key>sidebarVisible</key><true/>
+        <key>createdAt</key><date>2026-01-02T03:04:05Z</date>
+        <key>icon</key><data>
+          AAEC
+          AwQ=
+        </data>
+        <key>badInt</key><integer>x</integer>
+        <key>badReal</key><real>y</real>
+      </dict>
+    </plist>
+  </perspective>
+  <perspective id="persp2">
+    <plist xmlns="" version="1.0"><array><string>not a dict</string></array></plist>
+  </perspective>
+  <perspective id="persp5">
+    <plist version="1.0"><dict><key>name</key><string>Odd</string>
+    <key>filterRules</key><string>not json</string></dict></plist>
+  </perspective>
+  <perspective id="persp3"><plist xmlns="" version="1.0"/></perspective>
+  <perspective id="persp4"/>
+</omnifocus>
+"""
+
+
+class TestPerspectives:
+    def test_decodes_plist_definition(self) -> None:
+        model = build_model(make_zip(_PERSPECTIVE_XML))
+        persp = model.perspectives["persp1"]
+        assert persp.name == "Today"
+        assert persp.added is not None and persp.added.year == 2026
+        assert persp.modified is not None and persp.modified.month == 2
+        d = persp.definition
+        assert d["version"] == 3
+        assert d["iconScale"] == 1.5
+        assert d["filterRulesAggregation"] == "all"
+        assert d["filterRules"][0] == {"actionAvailability": "available"}
+        nested = d["filterRules"][1]
+        assert nested["aggregateType"] == "any"
+        assert nested["aggregateRules"][0] == {"actionHasAnyOfTags": ["tagP1"]}
+        assert d["showsCompleted"] is False
+        assert d["sidebarVisible"] is True
+        assert d["createdAt"] == "2026-01-02T03:04:05Z"
+        assert d["icon"] == "AAECAwQ="
+        assert d["badInt"] == "x"
+        assert d["badReal"] == "y"
+
+    def test_keeps_undecodable_filter_rules_as_text(self) -> None:
+        model = build_model(make_zip(_PERSPECTIVE_XML))
+        assert model.perspectives["persp5"].definition["filterRules"] == "not json"
+
+    def test_tolerates_missing_or_odd_plists(self) -> None:
+        model = build_model(make_zip(_PERSPECTIVE_XML))
+        for pid in ("persp2", "persp3", "persp4"):
+            persp = model.perspectives[pid]
+            assert persp.name == ""
+            assert persp.definition == {}
+            assert persp.added is None
+
+    def test_transaction_updates_and_deletes(self) -> None:
+        update = make_zip(
+            f'<omnifocus xmlns="{NS[1:-1]}">'
+            '<perspective id="persp1" op="update"><plist version="1.0"><dict>'
+            "<key>name</key><string>Now</string></dict></plist></perspective>"
+            '<perspective id="persp2" op="delete"/>'
+            "</omnifocus>"
+        )
+        model = build_model(make_zip(_PERSPECTIVE_XML), [update])
+        persp = model.perspectives["persp1"]
+        assert persp.name == "Now"
+        assert persp.definition == {"name": "Now"}
+        assert persp.added is not None
+        assert "persp2" not in model.perspectives

@@ -8,7 +8,7 @@ import dataclasses
 from datetime import UTC, datetime
 from typing import Any
 
-from omnifocus.models import Folder, OFModel, Project, Tag, Task
+from omnifocus.models import Folder, OFModel, Perspective, Project, Tag, Task
 from omnifocus.review import ProjectReviewState, compute_project_review_state
 
 
@@ -151,6 +151,38 @@ def tag_summary(tag: Tag, model: OFModel) -> dict[str, Any]:
         ),
         "child_tag_ids": [candidate.id for candidate in child_tags],
     }
+
+
+def _collect_strings(value: Any, out: set[str]) -> None:
+    """Add every string leaf of nested dict/list *value* to *out*."""
+    if isinstance(value, str):
+        out.add(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _collect_strings(item, out)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_strings(item, out)
+
+
+def perspective_summary(perspective: Perspective, model: OFModel) -> dict[str, Any]:
+    """Return a perspective with the tags, projects and folders it names resolved.
+
+    Filter rules and focus reference entities by stable id. Rather than assume
+    which plist keys hold ids, every string leaf that matches a known tag,
+    project or folder id is listed under ``references`` with its type and name.
+    """
+    strings: set[str] = set()
+    _collect_strings(perspective.definition, strings)
+    references: dict[str, dict[str, str]] = {}
+    for value in sorted(strings):
+        if value in model.tags:
+            references[value] = {"type": "tag", "name": model.tags[value].name}
+        elif value in model.projects:
+            references[value] = {"type": "project", "name": model.projects[value].name}
+        elif value in model.folders:
+            references[value] = {"type": "folder", "name": model.folders[value].name}
+    return {**serialise_json(perspective), "references": references}
 
 
 def validate_folder_parent_change(

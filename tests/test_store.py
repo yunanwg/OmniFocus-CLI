@@ -532,6 +532,18 @@ class TestCache:
         assert client.get_file.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_cache_missing_a_model_field_is_treated_as_stale(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        await store.load()
+        path = tmp_path / "of_model.pkl"
+        payload = pickle.loads(path.read_bytes())  # noqa: S301
+        del payload.model.__dict__["perspectives"]
+        path.write_bytes(pickle.dumps(payload))
+        model = await store.load()
+        assert model.perspectives == {}
+        assert client.get_file.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_unexpected_cache_payload_is_treated_as_stale(self, tmp_path: Path) -> None:
         store, client = _make_store(tmp_path)
         (tmp_path / "of_model.pkl").write_bytes(pickle.dumps("unexpected"))
